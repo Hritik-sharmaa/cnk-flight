@@ -78,6 +78,7 @@ const schemas = {
     _meta: Joi.object({
       createdBy: Joi.string(),
       searchParams: Joi.object(),
+      totalFare: Joi.number(),
     }),
   }),
 

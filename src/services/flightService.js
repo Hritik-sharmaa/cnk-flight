@@ -65,6 +65,14 @@ async function fareValidate(bookingId) {
 async function confirmBook(bookingId, paymentInfos) {
   const raw = await getProvider().confirmBook(bookingId, paymentInfos);
 
+  if (raw.status?.success === false) {
+    const err = raw.errors?.[0];
+    const msg = err
+      ? `Tripjack confirm-book failed: ${err.errCode} — ${err.details ?? ''}`
+      : 'Tripjack confirm-book returned success=false';
+    throw new Error(msg);
+  }
+
   try {
     await db.updateBookingStatus(bookingId, 'PENDING', raw);
   } catch (dbErr) {
