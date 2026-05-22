@@ -17,6 +17,8 @@ class FlightProvider {
   async seatMap(bookingId) { throw new Error(`${this.constructor.name} does not implement seatMap()`); }
   async book(bookingData) { throw new Error(`${this.constructor.name} does not implement book()`); }
   async fareValidate(bookingId) { throw new Error(`${this.constructor.name} does not implement fareValidate()`); }
+  /** Pre-ticket confirm fare — required step before confirmBook() in the Hold flow. */
+  async confirmFare(bookingId) { throw new Error(`${this.constructor.name} does not implement confirmFare()`); }
   async confirmBook(bookingId, paymentInfos) { throw new Error(`${this.constructor.name} does not implement confirmBook()`); }
   async bookingDetails(bookingId, requirePaxPricing) { throw new Error(`${this.constructor.name} does not implement bookingDetails()`); }
   async unhold(bookingId, pnrs) { throw new Error(`${this.constructor.name} does not implement unhold()`); }

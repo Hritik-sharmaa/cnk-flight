@@ -48,6 +48,11 @@ class TripjackProvider extends FlightProvider {
     return this._post('/oms/v1/air/book/fare-validate', { bookingId });
   }
 
+  /** Pre-ticket confirm fare (step 7 in Hold flow) — different from pre-book fareValidate (step 5). */
+  async confirmFare(bookingId) {
+    return this._post('/oms/v1/air/fare-validate', { bookingId });
+  }
+
   async confirmBook(bookingId, paymentInfos) {
     return this._post('/oms/v1/air/confirm-book', { bookingId, paymentInfos });
   }

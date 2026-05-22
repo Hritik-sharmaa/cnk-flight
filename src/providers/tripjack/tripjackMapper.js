@@ -107,11 +107,18 @@ function mapSearchResult(raw) {
 function mapReviewResult(raw) {
   if (!raw.bookingId) return raw;
 
+  // Tripjack uses lowercase 'fc' inside totalFareDetail but uppercase 'fC' inside individual
+  // passenger fares (fd.ADULT.fC.TF). Try both to guard against any casing inconsistency.
+  const totalFare =
+    raw.totalPriceInfo?.totalFareDetail?.fC?.TF ??
+    raw.totalPriceInfo?.totalFareDetail?.fc?.TF ??
+    null;
+
   return {
     bookingId: raw.bookingId,
     sessionValidSeconds: raw.conditions?.st,
     conditions: raw.conditions,
-    totalFare: raw.totalPriceInfo?.totalFareDetail?.fC?.TF,
+    totalFare,
     tripInfos: raw.tripInfos,
     raw,
   };

@@ -30,30 +30,11 @@ async function book(bookingData) {
 
   const raw = await getProvider().book(providerPayload);
 
-  // Persist to Supabase — detect hold vs instant by absence of paymentInfos
-  const isHold = !providerPayload.paymentInfos || providerPayload.paymentInfos.length === 0;
-  const status = raw.status?.success === false ? 'FAILED' : (isHold ? 'ON_HOLD' : 'PENDING');
-
-  try {
-    const booking = await db.saveBooking({
-      provider: PROVIDER_NAME(),
-      providerBookingId: providerPayload.bookingId,
-      status,
-      bookingType: isHold ? 'HOLD' : 'INSTANT',
-      totalFare: providerPayload.paymentInfos?.[0]?.amount || null,
-      searchParams: _meta?.searchParams || null,
-      bookingRequest: providerPayload,
-      bookingResponse: raw,
-      createdBy: _meta?.createdBy || null,
-    });
-
-    if (booking && providerPayload.travellerInfo) {
-      await db.savePassengers(booking.id, providerPayload.travellerInfo);
-    }
-  } catch (dbErr) {
-    // DB failure must not block the booking response — log and continue
-    console.error('[flightService.book] Supabase save failed:', dbErr.message);
-  }
+  // NOTE: DB persistence is intentionally removed from the microservice.
+  // The cnkb2b flight-book Supabase edge function is the single source of truth
+  // for flight_bookings rows. It writes the row, fetches hold timeLimit, stores
+  // hold_expires_at, and returns the Supabase UUID used by all downstream flows.
+  // Writing here too created duplicate rows and split hold_expires_at across them.
 
   return raw;
 }
@@ -62,7 +43,30 @@ async function fareValidate(bookingId) {
   return getProvider().fareValidate(bookingId);
 }
 
+async function confirmFare(bookingId) {
+  return getProvider().confirmFare(bookingId);
+}
+
 async function confirmBook(bookingId, paymentInfos) {
+  // Tripjack requires /oms/v1/air/fare-validate (pre-ticket) before confirm-book in the Hold flow.
+  const fareCheck = await getProvider().confirmFare(bookingId);
+
+  if (fareCheck.status?.success === false) {
+    const err = fareCheck.errors?.[0];
+    const code = err?.errCode;
+    if (code === '1059') throw new Error('Hold time limit expired. Please start a new booking.');
+    const msg = err
+      ? `Fare no longer available: ${code} — ${err.details ?? ''}`
+      : 'Fare is no longer available for this held booking';
+    throw new Error(msg);
+  }
+
+  const hasFareAlert = Array.isArray(fareCheck.alerts) &&
+    fareCheck.alerts.some((a) => a.type === 'FAREALERT');
+  if (hasFareAlert) {
+    throw new Error('Flight fare has changed since the hold was placed. Please start a new booking to get the current fare.');
+  }
+
   const raw = await getProvider().confirmBook(bookingId, paymentInfos);
 
   if (raw.status?.success === false) {
@@ -131,6 +135,7 @@ module.exports = {
   seatMap,
   book,
   fareValidate,
+  confirmFare,
   confirmBook,
   bookingDetails,
   unhold,

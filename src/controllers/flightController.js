@@ -21,6 +21,8 @@ const book = wrap(async (req) => flightService.book(req.body));
 
 const fareValidate = wrap(async (req) => flightService.fareValidate(req.body.bookingId));
 
+const confirmFare = wrap(async (req) => flightService.confirmFare(req.body.bookingId));
+
 const confirmBook = wrap(async (req) =>
   flightService.confirmBook(req.body.bookingId, req.body.paymentInfos)
 );
@@ -46,6 +48,7 @@ module.exports = {
   seatMap,
   book,
   fareValidate,
+  confirmFare,
   confirmBook,
   bookingDetails,
   unhold,

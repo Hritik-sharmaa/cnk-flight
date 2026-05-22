@@ -13,6 +13,7 @@ router.post('/fare-rule',        validate('fareRule'),         c.fareRule);
 router.post('/seat-map',         validate('seatMap'),          c.seatMap);
 router.post('/book',             validate('book'),             c.book);
 router.post('/fare-validate',    validate('fareValidate'),     c.fareValidate);
+router.post('/confirm-fare',     validate('confirmFare'),      c.confirmFare);
 router.post('/confirm-book',     validate('confirmBook'),      c.confirmBook);
 router.post('/booking-details',  validate('bookingDetails'),   c.bookingDetails);
 router.post('/unhold',           validate('unhold'),           c.unhold);

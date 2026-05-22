@@ -44,9 +44,9 @@ const schemas = {
       contacts: Joi.array().items(Joi.string()).required(),
     }).required(),
     contactInfo: Joi.object({
-      emails: Joi.array().items(Joi.string().email()),
-      contacts: Joi.array().items(Joi.string()),
-      ecn: Joi.string(),
+      ecn: Joi.string(),   // emergency contact name
+      ect: Joi.string(),   // emergency contact phone
+      ece: Joi.string().email().allow('', null),  // emergency contact email
     }),
     travellerInfo: Joi.array().items(
       Joi.object({
@@ -83,6 +83,10 @@ const schemas = {
   }),
 
   fareValidate: Joi.object({
+    bookingId: Joi.string().required(),
+  }),
+
+  confirmFare: Joi.object({
     bookingId: Joi.string().required(),
   }),
 
