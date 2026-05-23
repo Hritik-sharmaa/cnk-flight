@@ -13,10 +13,7 @@ npm install
 # 2. Copy env file and fill in your values
 cp .env.example .env
 
-# 3. Run the Supabase migration (once)
-#    Paste supabase/migrations/001_flight_tables.sql into your Supabase SQL editor and run it
-
-# 4. Start the server
+# 3. Start the server
 npm start          # production
 npm run dev        # development (nodemon, auto-restart)
 ```
@@ -35,8 +32,8 @@ Server starts on `http://localhost:3001` by default.
 | `FLIGHT_PROVIDER` | Yes | Active provider: `tripjack` / `travclan` / `tbo` |
 | `FLIGHT_API_KEY` | Yes | API key for the active provider |
 | `FLIGHT_API_BASE_URL` | Yes | Base URL for the active provider |
-| `SUPABASE_URL` | Yes | Your Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key (not the anon key) |
+
+> This service is **stateless**. It proxies and translates calls to the active flight provider — it does not read or write any database. Persistence (e.g. `flight_bookings`, `flight_passengers`, status transitions, hold expiry) is the caller's responsibility (handled by the `flight-*` Supabase edge functions in `cnkb2b`).
 
 ### Switching Providers
 
@@ -445,46 +442,6 @@ POST /amendment/charges  →  POST /amendment/submit  →  POST /amendment/detai
 
 ---
 
-## Supabase Tables
-
-The migration file is at [supabase/migrations/001_flight_tables.sql](supabase/migrations/001_flight_tables.sql). Run it once in your Supabase SQL editor.
-
-### `flight_bookings`
-
-| Column | Type | Description |
-|---|---|---|
-| `id` | UUID | Internal primary key |
-| `provider` | TEXT | `tripjack` / `travclan` / `tbo` |
-| `provider_booking_id` | TEXT | Booking ID from the provider |
-| `status` | TEXT | `SUCCESS` / `ON_HOLD` / `PENDING` / `CANCELLED` / `FAILED` / `ABORTED` / `UNCONFIRMED` |
-| `booking_type` | TEXT | `INSTANT` or `HOLD` |
-| `total_fare` | NUMERIC | Total fare charged |
-| `currency` | TEXT | Default `INR` |
-| `search_params` | JSONB | Original search parameters |
-| `booking_request` | JSONB | Full request sent to provider |
-| `booking_response` | JSONB | Full response from provider |
-| `created_by` | TEXT | Agent email or user ID (passed via `_meta.createdBy`) |
-| `created_at` | TIMESTAMPTZ | |
-| `updated_at` | TIMESTAMPTZ | Auto-updated on every status change |
-
-### `flight_passengers`
-
-| Column | Type | Description |
-|---|---|---|
-| `id` | UUID | Primary key |
-| `flight_booking_id` | UUID | FK to `flight_bookings` |
-| `passenger_type` | TEXT | `ADULT` / `CHILD` / `INFANT` |
-| `title` | TEXT | `Mr` / `Mrs` / `Ms` / `Master` |
-| `first_name` | TEXT | |
-| `last_name` | TEXT | |
-| `dob` | DATE | |
-| `passport_number` | TEXT | |
-| `passport_expiry` | DATE | |
-| `passport_nationality` | TEXT | 2-letter country code |
-| `pan_number` | TEXT | |
-
----
-
 ## Integration Example (cnkb2b / cnk-website)
 
 ```js
@@ -522,7 +479,7 @@ async function bookFlight(bookingPayload) {
     headers: { 'Content-Type': 'application/json', 'x-api-key': FLIGHT_API_KEY },
     body: JSON.stringify({
       ...bookingPayload,
-      _meta: { createdBy: 'agent@coxandkings.com' }, // optional — stored in Supabase
+      _meta: { createdBy: 'agent@coxandkings.com' }, // optional — the caller may persist this on its side
     }),
   });
   const json = await res.json();
@@ -553,15 +510,11 @@ cnk-flight/
 │   │   └── healthRoutes.js               # GET /health
 │   ├── controllers/flightController.js   # HTTP layer — calls flightService
 │   ├── services/
-│   │   ├── flightService.js              # Business logic, provider calls, DB sync
-│   │   └── supabaseService.js            # Supabase read/write
-│   ├── middleware/
-│   │   ├── auth.js                       # x-api-key validation
-│   │   ├── errorHandler.js               # Centralized error formatting
-│   │   └── validateRequest.js            # Joi body validation per endpoint
-│   └── lib/supabase.js                   # Supabase client (service role)
-└── supabase/migrations/
-    └── 001_flight_tables.sql             # flight_bookings + flight_passengers tables
+│   │   └── flightService.js              # Business logic, provider calls
+│   └── middleware/
+│       ├── auth.js                       # x-api-key validation
+│       ├── errorHandler.js               # Centralized error formatting
+│       └── validateRequest.js            # Joi body validation per endpoint
 ```
 
 ---

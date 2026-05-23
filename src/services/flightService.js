@@ -1,6 +1,5 @@
 const { getProvider } = require('../providers/FlightProviderFactory');
 const { mapSearchResult, mapReviewResult, mapBookingDetails } = require('../providers/tripjack/tripjackMapper');
-const db = require('./supabaseService');
 
 const PROVIDER_NAME = () => process.env.FLIGHT_PROVIDER || 'tripjack';
 
@@ -27,16 +26,7 @@ async function seatMap(bookingId) {
 
 async function book(bookingData) {
   const { _meta, ...providerPayload } = bookingData;
-
-  const raw = await getProvider().book(providerPayload);
-
-  // NOTE: DB persistence is intentionally removed from the microservice.
-  // The cnkb2b flight-book Supabase edge function is the single source of truth
-  // for flight_bookings rows. It writes the row, fetches hold timeLimit, stores
-  // hold_expires_at, and returns the Supabase UUID used by all downstream flows.
-  // Writing here too created duplicate rows and split hold_expires_at across them.
-
-  return raw;
+  return getProvider().book(providerPayload);
 }
 
 async function fareValidate(bookingId) {
@@ -77,39 +67,17 @@ async function confirmBook(bookingId, paymentInfos) {
     throw new Error(msg);
   }
 
-  try {
-    await db.updateBookingStatus(bookingId, 'PENDING', raw);
-  } catch (dbErr) {
-    console.error('[flightService.confirmBook] Supabase update failed:', dbErr.message);
-  }
-
   return raw;
 }
 
 async function bookingDetails(bookingId, requirePaxPricing) {
   const raw = await getProvider().bookingDetails(bookingId, requirePaxPricing);
-
-  // Sync status to DB if we have a record
-  if (raw.order?.status) {
-    try {
-      await db.updateBookingStatus(bookingId, raw.order.status, raw);
-    } catch (_) {}
-  }
-
   if (PROVIDER_NAME() === 'tripjack') return mapBookingDetails(raw);
   return raw;
 }
 
 async function unhold(bookingId, pnrs) {
-  const raw = await getProvider().unhold(bookingId, pnrs);
-
-  try {
-    await db.updateBookingStatus(bookingId, 'UNCONFIRMED', raw);
-  } catch (dbErr) {
-    console.error('[flightService.unhold] Supabase update failed:', dbErr.message);
-  }
-
-  return raw;
+  return getProvider().unhold(bookingId, pnrs);
 }
 
 async function amendmentCharges(data) {
