@@ -536,4 +536,4 @@ cnk-flight/
 - For domestic return with `SPECIAL_RETURN` fare, both priceIds must be `SPECIAL_RETURN`
 - GST `registeredName` max 35 chars, `address` max 70 chars
 - Never end any provider URL with `/` — Tripjack returns an error
-- Emergency contact (`contactInfo`) is only required when `conditions.iecr = true` in Review
+- Emergency contact (`contactInfo`) is only required when `conditions.iecr = true` in Review.
