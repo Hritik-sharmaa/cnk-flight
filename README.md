@@ -490,6 +490,103 @@ async function bookFlight(bookingPayload) {
 
 ---
 
+## Architecture
+
+This is a **stateless wrapper microservice** that normalizes multiple flight GDS providers (Tripjack, Travclan, TBO) behind one REST API. The caller talks only to this service — it never learns which provider is active. Switching providers is two `.env` lines, no code changes.
+
+The design is a classic **factory + strategy** pattern:
+
+- **One abstract contract** every provider must implement ([FlightProvider.js](src/providers/base/FlightProvider.js))
+- **One concrete class per provider** ([TripjackProvider.js](src/providers/tripjack/TripjackProvider.js), Travclan, TBO)
+- **One factory** that reads `FLIGHT_PROVIDER` from env and hands back the right instance ([FlightProviderFactory.js](src/providers/FlightProviderFactory.js))
+- **One mapper per provider** that normalizes raw upstream JSON to a stable shape the caller can rely on ([tripjackMapper.js](src/providers/tripjack/tripjackMapper.js))
+
+### Request flow
+
+```
+HTTP request
+    │
+    ▼
+server.js  →  app.js          (helmet, cors, json, morgan)
+    │
+    ▼
+routes/flightRoutes.js        (URL → handler)
+    │
+    ▼
+middleware/auth.js            (x-api-key check)
+    │
+    ▼
+middleware/validateRequest.js (Joi schema per endpoint; strips unknown keys)
+    │
+    ▼
+controllers/flightController  (thin: wraps result in { success, data })
+    │
+    ▼
+services/flightService        (orchestration + response mapping)
+    │
+    ▼
+providers/FlightProviderFactory.getProvider()
+    │
+    ▼
+TripjackProvider | TravclanProvider | TBOProvider
+    │
+    ▼
+Upstream GDS API
+    │
+    ▼
+providers/<name>/<mapper>     (normalizes raw provider response)
+    │
+    ▼
+{ success: true, data: <normalized> }
+```
+
+### Layer responsibilities
+
+| Layer | File | Responsibility |
+|---|---|---|
+| Entry | [server.js](server.js) | Boots HTTP server |
+| App | [src/app.js](src/app.js) | Express setup, global middleware, mounts routes, error handler |
+| Routes | [src/routes/flightRoutes.js](src/routes/flightRoutes.js) | URL → validation + controller; applies `auth` to all `/api/v1/flights/*` |
+| Auth | [src/middleware/auth.js](src/middleware/auth.js) | Checks `x-api-key` against `INTERNAL_API_KEY` |
+| Validation | [src/middleware/validateRequest.js](src/middleware/validateRequest.js) | Joi schema per endpoint; `stripUnknown` drops provider-foreign keys; top-level `_meta` is allowed through then stripped by the service before forwarding to the provider |
+| Controllers | [src/controllers/flightController.js](src/controllers/flightController.js) | Thin HTTP wrappers — a single `wrap()` helper turns each handler into `res.json({success, data})` and forwards errors to `errorHandler` |
+| Service | [src/services/flightService.js](src/services/flightService.js) | Calls the active provider, applies the right mapper, and orchestrates multi-step flows (e.g. `confirmBook` runs `confirmFare` first) |
+| Factory | [src/providers/FlightProviderFactory.js](src/providers/FlightProviderFactory.js) | Reads `FLIGHT_PROVIDER` once; returns a cached singleton |
+| Base | [src/providers/base/FlightProvider.js](src/providers/base/FlightProvider.js) | Abstract class — 14 methods every provider must implement; missing methods throw |
+| Providers | [tripjack/](src/providers/tripjack/), [travclan/](src/providers/travclan/), [tbo/](src/providers/tbo/) | One folder per upstream GDS; Travclan & TBO are stubs returning 501 |
+| Mappers | [tripjack/tripjackMapper.js](src/providers/tripjack/tripjackMapper.js) | Normalize raw provider JSON → the shape documented in API Endpoints above |
+| Error | [src/middleware/errorHandler.js](src/middleware/errorHandler.js) | Centralized formatter — converts Axios provider errors to `502` with provider details, everything else to `{success:false, error}` |
+
+### How the multi-provider wrapper works
+
+1. **Contract** — `FlightProvider` declares one async method per supported operation: `search`, `review`, `fareRule`, `seatMap`, `book`, `fareValidate`, `confirmFare`, `confirmBook`, `bookingDetails`, `unhold`, `amendmentCharges`, `submitAmendment`, `amendmentDetails`, `userBalance`. Each unimplemented method throws a clear error so partial integrations fail fast.
+2. **Factory** — `getProvider()` reads `FLIGHT_PROVIDER` once, looks up the class in a `{ tripjack, travclan, tbo }` map, news it up with `{ apiKey, baseUrl }` from env, and caches the instance for the process lifetime. `resetProvider()` exists for tests / env reload.
+3. **Service translation** — every service function does the same three steps: `getProvider().<method>(...)` → run the provider-specific mapper → return. Today only Tripjack has a mapper; when Travclan or TBO are wired up they get their own mappers and the service grows one more branch — the controller and the HTTP contract stay identical.
+4. **Response shape** — controllers always emit `{ success, data }`; mappers also expose `data.raw` so callers can drill into the unmodified provider response when they need to.
+
+### What each controller does
+
+Controllers are deliberately one-liners — all real logic lives in `flightService`. Mapping:
+
+| Endpoint | Controller | What the service does |
+|---|---|---|
+| `POST /search` | `c.search` | `provider.search(params)`, normalize via `mapSearchResult` |
+| `POST /review` | `c.review` | `provider.review(priceIds)`, normalize via `mapReviewResult` (returns `bookingId`) |
+| `POST /fare-rule` | `c.fareRule` | Fetch refund/change rules, normalize via `mapFareRule` |
+| `POST /seat-map` | `c.seatMap` | Fetch seat layout, normalize via `mapSeatMap` |
+| `POST /book` | `c.book` | Strip `_meta`, forward payload to `provider.book()` (instant or hold) |
+| `POST /fare-validate` | `c.fareValidate` | Revalidate a held booking's fare |
+| `POST /confirm-fare` | `c.confirmFare` | Tripjack pre-ticket fare check |
+| `POST /confirm-book` | `c.confirmBook` | **Orchestrated**: runs `confirmFare` first; throws on fare alert / err `1059` (hold expired); then `confirmBook(bookingId, paymentInfos)` |
+| `POST /booking-details` | `c.bookingDetails` | Fetch PNR/ticket status, normalize via `mapBookingDetails` |
+| `POST /unhold` | `c.unhold` | Release a held booking without ticketing |
+| `POST /amendment/charges` | `c.amendmentCharges` | Preview cancellation charges |
+| `POST /amendment/submit` | `c.submitAmendment` | Submit cancellation, returns `amendmentId` |
+| `POST /amendment/details` | `c.amendmentDetails` | Poll amendment status |
+| `GET /balance` | `c.userBalance` | Provider wallet balance |
+
+---
+
 ## Project Structure
 
 ```

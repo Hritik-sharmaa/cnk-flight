@@ -24,7 +24,7 @@ const schemas = {
   }),
 
   review: Joi.object({
-    priceIds: Joi.array().items(Joi.string()).min(1).max(2).required(),
+    priceIds: Joi.array().items(Joi.string()).min(1).max(6).required(),
   }),
 
   fareRule: Joi.object({
@@ -131,7 +131,14 @@ function validateRequest(schemaName) {
     const schema = schemas[schemaName];
     if (!schema) return next();
 
-    const { error, value } = schema.validate(req.body, { abortEarly: false, allowUnknown: false });
+    // allowUnknown + stripUnknown: lets callers attach a top-level `_meta` block
+    // (UAT correlation ids, test-case labels) that gets dropped before the
+    // payload is forwarded to the upstream provider.
+    const { error, value } = schema.validate(req.body, {
+      abortEarly: false,
+      allowUnknown: true,
+      stripUnknown: { objects: true },
+    });
     if (error) {
       return res.status(400).json({
         success: false,
