@@ -79,26 +79,32 @@ function mapSearchResult(raw) {
   if (!result) return raw;
 
   const mapped = { raw };
+  const trips = result.tripInfos || {};
 
-  if (result.tripInfos?.ONWARD) {
-    mapped.onward = result.tripInfos.ONWARD.map((trip) => ({
-      segments: (trip.sI || []).map(mapSegment),
-      fareOptions: (trip.totalPriceList || []).map(mapFareOption),
-    }));
-  }
+  const mapTrip = (trip) => ({
+    segments: (trip.sI || []).map(mapSegment),
+    fareOptions: (trip.totalPriceList || []).map(mapFareOption),
+  });
 
-  if (result.tripInfos?.RETURN) {
-    mapped.return = result.tripInfos.RETURN.map((trip) => ({
-      segments: (trip.sI || []).map(mapSegment),
-      fareOptions: (trip.totalPriceList || []).map(mapFareOption),
-    }));
-  }
+  // Standard keys (domestic one-way/return + international COMBO)
+  if (Array.isArray(trips.ONWARD)) mapped.onward = trips.ONWARD.map(mapTrip);
+  if (Array.isArray(trips.RETURN)) mapped.return = trips.RETURN.map(mapTrip);
+  if (Array.isArray(trips.COMBO)) mapped.combo = trips.COMBO.map(mapTrip);
 
-  if (result.tripInfos?.COMBO) {
-    mapped.combo = result.tripInfos.COMBO.map((trip) => ({
-      segments: (trip.sI || []).map(mapSegment),
-      fareOptions: (trip.totalPriceList || []).map(mapFareOption),
-    }));
+  // Tripjack returns numeric-indexed keys ("0", "1", ...) for **domestic
+  // multi-city** searches — one trip block per leg in order. International
+  // multi-city uses tripInfos.COMBO instead (already handled above).
+  if (!mapped.onward && !mapped.combo) {
+    const numericKeys = Object.keys(trips)
+      .filter((k) => /^\d+$/.test(k))
+      .sort((a, b) => Number(a) - Number(b));
+    if (numericKeys.length > 0) {
+      // Expose every leg as an ordered legs[] array so the frontend can render
+      // one fare list per leg and collect a priceId per leg for /review.
+      mapped.legs = numericKeys.map((k) => (trips[k] || []).map(mapTrip));
+      // Also surface leg 0 as onward so single-leg / legacy callers keep working.
+      mapped.onward = mapped.legs[0];
+    }
   }
 
   return mapped;
