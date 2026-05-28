@@ -1,10 +1,11 @@
 -- =============================================================
 -- Hotel Microservice — Database Schema
+-- All tables are prefixed with hotels_ to avoid conflicts
 -- =============================================================
 
--- 1. regions
+-- 1. hotels_regions
 -- Master city/region table. All static city data from suppliers is normalised here.
-CREATE TABLE IF NOT EXISTS regions (
+CREATE TABLE IF NOT EXISTS hotels_regions (
     id                  BIGSERIAL PRIMARY KEY,
 
     supplier            VARCHAR(50)  NOT NULL,
@@ -32,29 +33,29 @@ CREATE TABLE IF NOT EXISTS regions (
     UNIQUE (supplier, supplier_region_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_regions_supplier
-    ON regions (supplier, supplier_region_id);
+CREATE INDEX IF NOT EXISTS idx_hotels_regions_supplier
+    ON hotels_regions (supplier, supplier_region_id);
 
-CREATE INDEX IF NOT EXISTS idx_regions_city
-    ON regions (city_name);
+CREATE INDEX IF NOT EXISTS idx_hotels_regions_city
+    ON hotels_regions (city_name);
 
-CREATE INDEX IF NOT EXISTS idx_regions_country
-    ON regions (country_name);
+CREATE INDEX IF NOT EXISTS idx_hotels_regions_country
+    ON hotels_regions (country_name);
 
-CREATE INDEX IF NOT EXISTS idx_regions_fullname
-    ON regions USING gin (to_tsvector('simple', COALESCE(full_region_name, '')));
+CREATE INDEX IF NOT EXISTS idx_hotels_regions_fullname
+    ON hotels_regions USING gin (to_tsvector('simple', COALESCE(full_region_name, '')));
 
 -- =============================================================
 
--- 2. hotels
+-- 2. hotels_inventory
 -- Master hotel inventory. Normalised from supplier data; never coupled to a single supplier schema.
-CREATE TABLE IF NOT EXISTS hotels (
+CREATE TABLE IF NOT EXISTS hotels_inventory (
     id                  BIGSERIAL PRIMARY KEY,
 
     supplier            VARCHAR(50)  NOT NULL,
     supplier_hotel_id   VARCHAR(100) NOT NULL,
 
-    region_id           BIGINT REFERENCES regions (id),
+    region_id           BIGINT REFERENCES hotels_regions (id),
 
     name                TEXT NOT NULL,
     slug                TEXT,
@@ -94,19 +95,19 @@ CREATE TABLE IF NOT EXISTS hotels (
     UNIQUE (supplier, supplier_hotel_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_hotels_supplier
-    ON hotels (supplier, supplier_hotel_id);
+CREATE INDEX IF NOT EXISTS idx_hotels_inventory_supplier
+    ON hotels_inventory (supplier, supplier_hotel_id);
 
-CREATE INDEX IF NOT EXISTS idx_hotels_region
-    ON hotels (region_id);
+CREATE INDEX IF NOT EXISTS idx_hotels_inventory_region
+    ON hotels_inventory (region_id);
 
-CREATE INDEX IF NOT EXISTS idx_hotels_rating
-    ON hotels (rating);
+CREATE INDEX IF NOT EXISTS idx_hotels_inventory_rating
+    ON hotels_inventory (rating);
 
-CREATE INDEX IF NOT EXISTS idx_hotels_search
-    ON hotels USING gin (search_vector);
+CREATE INDEX IF NOT EXISTS idx_hotels_inventory_search
+    ON hotels_inventory USING gin (search_vector);
 
-CREATE OR REPLACE FUNCTION hotels_search_vector_update()
+CREATE OR REPLACE FUNCTION hotels_inventory_search_vector_update()
 RETURNS trigger AS $$
 BEGIN
     NEW.search_vector :=
@@ -120,20 +121,20 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_hotels_search_vector ON hotels;
+DROP TRIGGER IF EXISTS trg_hotels_inventory_search_vector ON hotels_inventory;
 
-CREATE TRIGGER trg_hotels_search_vector
-    BEFORE INSERT OR UPDATE ON hotels
+CREATE TRIGGER trg_hotels_inventory_search_vector
+    BEFORE INSERT OR UPDATE ON hotels_inventory
     FOR EACH ROW
-    EXECUTE FUNCTION hotels_search_vector_update();
+    EXECUTE FUNCTION hotels_inventory_search_vector_update();
 
 -- =============================================================
 
--- 3. hotel_images
-CREATE TABLE IF NOT EXISTS hotel_images (
+-- 3. hotels_images
+CREATE TABLE IF NOT EXISTS hotels_images (
     id          BIGSERIAL PRIMARY KEY,
 
-    hotel_id    BIGINT REFERENCES hotels (id) ON DELETE CASCADE,
+    hotel_id    BIGINT REFERENCES hotels_inventory (id) ON DELETE CASCADE,
 
     image_url   TEXT NOT NULL,
     image_size  VARCHAR(50),
@@ -142,16 +143,16 @@ CREATE TABLE IF NOT EXISTS hotel_images (
     created_at  TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_hotel_images_hotel
-    ON hotel_images (hotel_id);
+CREATE INDEX IF NOT EXISTS idx_hotels_images_hotel
+    ON hotels_images (hotel_id);
 
 -- =============================================================
 
--- 4. hotel_facilities
-CREATE TABLE IF NOT EXISTS hotel_facilities (
+-- 4. hotels_facilities
+CREATE TABLE IF NOT EXISTS hotels_facilities (
     id              BIGSERIAL PRIMARY KEY,
 
-    hotel_id        BIGINT REFERENCES hotels (id) ON DELETE CASCADE,
+    hotel_id        BIGINT REFERENCES hotels_inventory (id) ON DELETE CASCADE,
 
     facility_code   VARCHAR(100),
     facility_type   VARCHAR(100),
@@ -160,14 +161,14 @@ CREATE TABLE IF NOT EXISTS hotel_facilities (
     created_at      TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_hotel_facilities_hotel
-    ON hotel_facilities (hotel_id);
+CREATE INDEX IF NOT EXISTS idx_hotels_facilities_hotel
+    ON hotels_facilities (hotel_id);
 
 -- =============================================================
 
--- 5. supplier_sync_logs
--- Audit trail for every TripJack sync job (cities, hotels, etc.).
-CREATE TABLE IF NOT EXISTS supplier_sync_logs (
+-- 5. hotels_sync_logs
+-- Audit trail for every supplier sync job (cities, hotels, etc.).
+CREATE TABLE IF NOT EXISTS hotels_sync_logs (
     id                  BIGSERIAL PRIMARY KEY,
 
     supplier            VARCHAR(50),
@@ -188,18 +189,17 @@ CREATE TABLE IF NOT EXISTS supplier_sync_logs (
     created_at          TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_supplier_sync_logs_supplier
-    ON supplier_sync_logs (supplier);
+CREATE INDEX IF NOT EXISTS idx_hotels_sync_logs_supplier
+    ON hotels_sync_logs (supplier);
 
-CREATE INDEX IF NOT EXISTS idx_supplier_sync_logs_created
-    ON supplier_sync_logs (created_at);
+CREATE INDEX IF NOT EXISTS idx_hotels_sync_logs_created
+    ON hotels_sync_logs (created_at);
 
 -- =============================================================
 
--- 6. api_request_logs
--- Logs every outbound HTTP call made to TripJack (written async, non-blocking).
--- Also used for inbound API request tracing.
-CREATE TABLE IF NOT EXISTS api_request_logs (
+-- 6. hotels_api_logs
+-- Logs every outbound HTTP call to TripJack (written async, non-blocking).
+CREATE TABLE IF NOT EXISTS hotels_api_logs (
     id                  BIGSERIAL PRIMARY KEY,
 
     trace_id            UUID,
@@ -226,23 +226,23 @@ CREATE TABLE IF NOT EXISTS api_request_logs (
     created_at          TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_api_logs_trace
-    ON api_request_logs (trace_id);
+CREATE INDEX IF NOT EXISTS idx_hotels_api_logs_trace
+    ON hotels_api_logs (trace_id);
 
-CREATE INDEX IF NOT EXISTS idx_api_logs_client
-    ON api_request_logs (client_id);
+CREATE INDEX IF NOT EXISTS idx_hotels_api_logs_client
+    ON hotels_api_logs (client_id);
 
-CREATE INDEX IF NOT EXISTS idx_api_logs_created
-    ON api_request_logs (created_at);
+CREATE INDEX IF NOT EXISTS idx_hotels_api_logs_created
+    ON hotels_api_logs (created_at);
 
-CREATE INDEX IF NOT EXISTS idx_api_logs_endpoint
-    ON api_request_logs (endpoint);
+CREATE INDEX IF NOT EXISTS idx_hotels_api_logs_endpoint
+    ON hotels_api_logs (endpoint);
 
 -- =============================================================
 
--- 7. bookings
+-- 7. hotels_bookings
 -- Confirmed hotel bookings. Populated in the booking flow (Phase 2+).
-CREATE TABLE IF NOT EXISTS bookings (
+CREATE TABLE IF NOT EXISTS hotels_bookings (
     id                      BIGSERIAL PRIMARY KEY,
 
     booking_reference       UUID,
@@ -250,7 +250,7 @@ CREATE TABLE IF NOT EXISTS bookings (
     supplier                VARCHAR(50),
     supplier_booking_id     VARCHAR(100),
 
-    hotel_id                BIGINT REFERENCES hotels (id),
+    hotel_id                BIGINT REFERENCES hotels_inventory (id),
 
     client_id               VARCHAR(100),
 
@@ -270,29 +270,29 @@ CREATE TABLE IF NOT EXISTS bookings (
     updated_at              TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_bookings_supplier
-    ON bookings (supplier, supplier_booking_id);
+CREATE INDEX IF NOT EXISTS idx_hotels_bookings_supplier
+    ON hotels_bookings (supplier, supplier_booking_id);
 
-CREATE INDEX IF NOT EXISTS idx_bookings_client
-    ON bookings (client_id);
+CREATE INDEX IF NOT EXISTS idx_hotels_bookings_client
+    ON hotels_bookings (client_id);
 
-CREATE INDEX IF NOT EXISTS idx_bookings_hotel
-    ON bookings (hotel_id);
+CREATE INDEX IF NOT EXISTS idx_hotels_bookings_hotel
+    ON hotels_bookings (hotel_id);
 
-CREATE INDEX IF NOT EXISTS idx_bookings_status
-    ON bookings (booking_status);
+CREATE INDEX IF NOT EXISTS idx_hotels_bookings_status
+    ON hotels_bookings (booking_status);
 
-CREATE INDEX IF NOT EXISTS idx_bookings_created
-    ON bookings (created_at);
+CREATE INDEX IF NOT EXISTS idx_hotels_bookings_created
+    ON hotels_bookings (created_at);
 
 -- =============================================================
 
--- 8. booking_logs
+-- 8. hotels_booking_logs
 -- Lifecycle events for each booking (prebook, confirm, cancel, refund, retry).
-CREATE TABLE IF NOT EXISTS booking_logs (
+CREATE TABLE IF NOT EXISTS hotels_booking_logs (
     id                  BIGSERIAL PRIMARY KEY,
 
-    booking_id          BIGINT REFERENCES bookings (id),
+    booking_id          BIGINT REFERENCES hotels_bookings (id),
 
     action              VARCHAR(50),
 
@@ -305,8 +305,8 @@ CREATE TABLE IF NOT EXISTS booking_logs (
     created_at          TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_booking_logs_booking
-    ON booking_logs (booking_id);
+CREATE INDEX IF NOT EXISTS idx_hotels_booking_logs_booking
+    ON hotels_booking_logs (booking_id);
 
-CREATE INDEX IF NOT EXISTS idx_booking_logs_created
-    ON booking_logs (created_at);
+CREATE INDEX IF NOT EXISTS idx_hotels_booking_logs_created
+    ON hotels_booking_logs (created_at);

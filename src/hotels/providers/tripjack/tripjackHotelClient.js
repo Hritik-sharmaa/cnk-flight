@@ -1,55 +1,120 @@
 const axios = require('axios');
 const { randomUUID } = require('crypto');
-const supabase = require('../../../db/supabase');
+const logger = require('../../../utils/logger');
+const logToDB = require('../../../utils/logToDB');
+const { BASE_URLS } = require('./tripjackHotelConfig');
 
-const client = axios.create({
-  baseURL: process.env.HOTEL_API_BASE_URL,
-  headers: {
-    apikey: process.env.HOTEL_API_KEY,
-    'Content-Type': 'application/json',
-  },
-  timeout: 60000,
-});
+const makeClient = (baseURL) =>
+  axios.create({
+    baseURL,
+    headers: {
+      apikey: process.env.HOTEL_API_KEY,
+      'Content-Type': 'application/json',
+    },
+    timeout: 60000,
+  });
 
-async function _logCall({ traceId, endpoint, method, requestBody, responseStatus, responseTimeMs, success, errorMessage }) {
-  // fire-and-forget — errors here must never propagate to the caller
-  supabase
-    .from('api_request_logs')
-    .insert({
-      trace_id: traceId,
-      endpoint,
-      method,
-      request_body: requestBody,
-      response_status: responseStatus,
-      response_time_ms: responseTimeMs,
-      success,
-      error_message: errorMessage ?? null,
-      client_type: 'hotel-sync',
-    })
-    .then(({ error }) => {
-      if (error) console.error('[hotel-client] Failed to write api_request_log:', error.message);
-    });
+/**
+ * Resolve final mode with priority:
+ *   1. Explicit param passed by caller ('test' | 'live')
+ *   2. HOTEL_MODE env var
+ *   3. 'live' as hard fallback
+ */
+function resolveMode(mode) {
+  if (mode === 'test' || mode === 'live') return mode;
+  return process.env.HOTEL_MODE === 'test' ? 'test' : 'live';
 }
 
-async function post(path, body = {}) {
-  const traceId = randomUUID();
-  const start = Date.now();
-  let responseStatus = null;
-  let success = false;
-  let errorMessage = null;
+function getBaseUrl(resolvedMode, service) {
+  const url = BASE_URLS[service]?.[resolvedMode];
+  if (!url) {
+    const key = service === 'static' ? 'HOTEL_STATIC_API_BASE_URL' : 'HOTEL_HMS_API_BASE_URL';
+    throw new Error(`${key}_${resolvedMode.toUpperCase()} is not set in .env`);
+  }
+  if (!process.env.HOTEL_API_KEY) throw new Error('HOTEL_API_KEY is not set in .env');
+  return url;
+}
 
-  try {
-    const res = await client.post(path, body);
-    responseStatus = res.status;
-    success = true;
-    return res.data;
-  } catch (err) {
-    responseStatus = err.response?.status ?? null;
-    errorMessage = err.message;
-    throw err;
-  } finally {
-    _logCall({ traceId, endpoint: path, method: 'POST', requestBody: body, responseStatus, responseTimeMs: Date.now() - start, success, errorMessage });
+function checkTripjackError(data, path) {
+  if (data?.status?.success === false) {
+    const error = data.errors?.[0] ?? {};
+    const code = error.errCode ?? '?';
+    const msg = error.errMsg ?? error.details ?? error.message ?? 'no message returned';
+    logger.warn(`[tripjackHotelClient] TripJack error on ${path}`, { status: data.status, errors: data.errors });
+    throw new Error(`[${code}] ${msg}`);
   }
 }
 
-module.exports = { post };
+/**
+ * GET request to TripJack hotel API.
+ * @param {string} path
+ * @param {Object} queryParams
+ * @param {'live'|'test'} [mode]
+ * @param {'hms'|'static'} [service='hms']
+ */
+async function get(path, queryParams = {}, mode, service = 'hms') {
+  const resolvedMode = resolveMode(mode);
+  const baseUrl = getBaseUrl(resolvedMode, service);
+  const traceId = randomUUID();
+  const start = Date.now();
+  let responseStatus = null;
+  let responseData = null;
+  let success = false;
+  let errorMessage = null;
+
+  logger.info(`[tripjackHotelClient] GET ${baseUrl}${path}`, { params: queryParams, mode: resolvedMode });
+
+  try {
+    const res = await makeClient(baseUrl).get(path, { params: queryParams });
+    responseStatus = res.status;
+    responseData = res.data;
+    checkTripjackError(responseData, path);
+    success = true;
+    logger.info(`[tripjackHotelClient] GET ${path} → ${responseStatus} (${Date.now() - start}ms)`);
+    return responseData;
+  } catch (err) {
+    responseStatus = responseStatus ?? err.response?.status ?? null;
+    errorMessage = err.message;
+    throw err;
+  } finally {
+    logToDB({ traceId, clientType: 'hotel-sync', endpoint: path, method: 'GET', requestBody: queryParams, responseBody: responseData, responseStatus, responseTimeMs: Date.now() - start, success, errorMessage });
+  }
+}
+
+/**
+ * POST request to TripJack hotel API.
+ * @param {string} path
+ * @param {Object} body
+ * @param {'live'|'test'} [mode]
+ * @param {'hms'|'static'} [service='hms']
+ */
+async function post(path, body = {}, mode, service = 'hms') {
+  const resolvedMode = resolveMode(mode);
+  const baseUrl = getBaseUrl(resolvedMode, service);
+  const traceId = randomUUID();
+  const start = Date.now();
+  let responseStatus = null;
+  let responseData = null;
+  let success = false;
+  let errorMessage = null;
+
+  logger.info(`[tripjackHotelClient] POST ${baseUrl}${path}`, { mode: resolvedMode });
+
+  try {
+    const res = await makeClient(baseUrl).post(path, body);
+    responseStatus = res.status;
+    responseData = res.data;
+    checkTripjackError(responseData, path);
+    success = true;
+    logger.info(`[tripjackHotelClient] POST ${path} → ${responseStatus} (${Date.now() - start}ms)`);
+    return responseData;
+  } catch (err) {
+    responseStatus = responseStatus ?? err.response?.status ?? null;
+    errorMessage = err.message;
+    throw err;
+  } finally {
+    logToDB({ traceId, clientType: 'hotel-sync', endpoint: path, method: 'POST', requestBody: body, responseBody: responseData, responseStatus, responseTimeMs: Date.now() - start, success, errorMessage });
+  }
+}
+
+module.exports = { get, post };

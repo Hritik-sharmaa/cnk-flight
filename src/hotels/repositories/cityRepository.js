@@ -20,7 +20,7 @@ async function upsertCities(cities) {
   }));
 
   const { error } = await supabase
-    .from('regions')
+    .from('hotels_regions')
     .upsert(rows, { onConflict: 'supplier,supplier_region_id' });
 
   if (error) throw error;
@@ -29,7 +29,7 @@ async function upsertCities(cities) {
 
 async function searchCities({ q, limit = 20 }) {
   const { data, error } = await supabase
-    .from('regions')
+    .from('hotels_regions')
     .select('id, city_name, region_name, state_name, country_name, country_code, supplier_region_id, region_type, latitude, longitude')
     .eq('is_active', true)
     .ilike('full_region_name', `%${q}%`)

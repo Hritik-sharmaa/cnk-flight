@@ -7,8 +7,11 @@ async function upsertHotels(hotels) {
     supplier: hotel.supplier,
     supplier_hotel_id: hotel.supplierHotelId,
     name: hotel.name,
+    slug: hotel.slug,
     property_type: hotel.propertyType,
+    description: hotel.description,
     rating: hotel.rating,
+    is_deleted: hotel.isDeleted ?? false,
     address_line: hotel.addressLine,
     postal_code: hotel.postalCode,
     city_name: hotel.cityName,
@@ -26,7 +29,7 @@ async function upsertHotels(hotels) {
   }));
 
   const { data: upsertedHotels, error: hotelError } = await supabase
-    .from('hotels')
+    .from('hotels_inventory')
     .upsert(hotelRows, { onConflict: 'supplier,supplier_hotel_id' })
     .select('id, supplier_hotel_id');
 
@@ -54,16 +57,16 @@ async function upsertHotels(hotels) {
 
   if (hotelIds.length) {
     // Delete existing images/facilities for this batch before re-inserting
-    await supabase.from('hotel_images').delete().in('hotel_id', hotelIds);
-    await supabase.from('hotel_facilities').delete().in('hotel_id', hotelIds);
+    await supabase.from('hotels_images').delete().in('hotel_id', hotelIds);
+    await supabase.from('hotels_facilities').delete().in('hotel_id', hotelIds);
 
     if (allImages.length) {
-      const { error: imgError } = await supabase.from('hotel_images').insert(allImages);
+      const { error: imgError } = await supabase.from('hotels_images').insert(allImages);
       if (imgError) throw imgError;
     }
 
     if (allFacilities.length) {
-      const { error: facError } = await supabase.from('hotel_facilities').insert(allFacilities);
+      const { error: facError } = await supabase.from('hotels_facilities').insert(allFacilities);
       if (facError) throw facError;
     }
   }
@@ -76,7 +79,7 @@ async function searchHotels({ cityId, page = 1, limit = 20 }) {
   const to = from + limit - 1;
 
   const { data, error } = await supabase
-    .from('hotels')
+    .from('hotels_inventory')
     .select('id, name, rating, property_type, city_name, country_name, address_line, latitude, longitude, supplier_hotel_id')
     .eq('is_deleted', false)
     .eq('region_id', cityId)
@@ -90,11 +93,11 @@ async function searchHotels({ cityId, page = 1, limit = 20 }) {
 
 async function getHotelById(id) {
   const { data, error } = await supabase
-    .from('hotels')
+    .from('hotels_inventory')
     .select(`
       *,
-      hotel_images ( image_url, image_size, sort_order ),
-      hotel_facilities ( facility_code, facility_type, facility_name )
+      hotels_images ( image_url, image_size, sort_order ),
+      hotels_facilities ( facility_code, facility_type, facility_name )
     `)
     .eq('id', id)
     .eq('is_deleted', false)

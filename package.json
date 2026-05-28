@@ -16,7 +16,8 @@
     "joi": "^17.12.0",
     "morgan": "^1.10.0",
     "@supabase/supabase-js": "^2.39.0",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.0"

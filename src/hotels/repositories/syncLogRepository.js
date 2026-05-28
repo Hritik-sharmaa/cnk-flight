@@ -2,7 +2,7 @@ const supabase = require('../../db/supabase');
 
 async function createSyncLog({ supplier, syncType, requestUrl, requestPayload }) {
   const { data, error } = await supabase
-    .from('supplier_sync_logs')
+    .from('hotels_sync_logs')
     .insert({
       supplier,
       sync_type: syncType,
@@ -19,7 +19,7 @@ async function createSyncLog({ supplier, syncType, requestUrl, requestPayload })
 
 async function completeSyncLog({ id, responseStatus, recordsProcessed, success, errorMessage }) {
   const { error } = await supabase
-    .from('supplier_sync_logs')
+    .from('hotels_sync_logs')
     .update({
       response_status: responseStatus,
       records_processed: recordsProcessed,
