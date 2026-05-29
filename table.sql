@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS hotels_inventory (
 
     supplier            VARCHAR(50)  NOT NULL,
     supplier_hotel_id   VARCHAR(100) NOT NULL,
+    unica_id            VARCHAR(100),
 
     region_id           BIGINT REFERENCES hotels_regions (id),
 
@@ -77,6 +78,7 @@ CREATE TABLE IF NOT EXISTS hotels_inventory (
     city_name           TEXT,
     state_name          TEXT,
     country_name        TEXT,
+    country_code        CHAR(2),
 
     contact_phone       TEXT,
     contact_email       TEXT,

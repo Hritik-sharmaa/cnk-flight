@@ -75,6 +75,10 @@ async function get(path, queryParams = {}, mode, service = 'hms') {
   } catch (err) {
     responseStatus = responseStatus ?? err.response?.status ?? null;
     errorMessage = err.message;
+    logger.error(`[tripjackHotelClient] GET ${path} failed → ${responseStatus}`, {
+      errorMessage,
+      responseBody: err.response?.data ?? null,
+    });
     throw err;
   } finally {
     logToDB({ traceId, clientType: 'hotel-sync', endpoint: path, method: 'GET', requestBody: queryParams, responseBody: responseData, responseStatus, responseTimeMs: Date.now() - start, success, errorMessage });
@@ -98,7 +102,7 @@ async function post(path, body = {}, mode, service = 'hms') {
   let success = false;
   let errorMessage = null;
 
-  logger.info(`[tripjackHotelClient] POST ${baseUrl}${path}`, { mode: resolvedMode });
+  logger.info(`[tripjackHotelClient] POST ${baseUrl}${path}`, { body, mode: resolvedMode });
 
   try {
     const res = await makeClient(baseUrl).post(path, body);
@@ -111,6 +115,10 @@ async function post(path, body = {}, mode, service = 'hms') {
   } catch (err) {
     responseStatus = responseStatus ?? err.response?.status ?? null;
     errorMessage = err.message;
+    logger.error(`[tripjackHotelClient] POST ${path} failed → ${responseStatus}`, {
+      errorMessage,
+      responseBody: err.response?.data ?? null,
+    });
     throw err;
   } finally {
     logToDB({ traceId, clientType: 'hotel-sync', endpoint: path, method: 'POST', requestBody: body, responseBody: responseData, responseStatus, responseTimeMs: Date.now() - start, success, errorMessage });

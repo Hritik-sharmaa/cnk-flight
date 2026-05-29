@@ -21,6 +21,7 @@ const BASE_URLS = {
 const ENDPOINTS = {
   CITY_LIST:  '/hms/v3/content/fetch-city-regionIds', // GET  — HMS service
   HOTEL_LIST: '/hms/v3/fetch-static-hotels',          // POST — Static service
+  LISTING:    '/hms/v3/hotel/listing',                // POST — HMS service, live pricing
 };
 
 const PAGINATION = {

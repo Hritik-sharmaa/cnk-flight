@@ -41,6 +41,8 @@ function mapHotel(raw) {
     hotel: {
       supplier: 'tripjack',
       supplierHotelId: String(raw.tjHotelId ?? ''),
+      unicaId: raw.unicaId ? String(raw.unicaId) : null,
+      supplierCityCode: addr.city?.code ? String(addr.city.code) : null, // used to resolve region_id FK
       name: raw.name ?? '',
       slug: slugify(raw.name),
       propertyType: raw.propertyType ?? null,
@@ -52,6 +54,7 @@ function mapHotel(raw) {
       cityName: addr.city?.name ?? raw.cityName ?? null,
       stateName: addr.state?.name ?? null,
       countryName: addr.country?.name ?? raw.countryName ?? null,
+      countryCode: addr.country?.code ?? null,
       latitude: raw.geolocation?.lt != null ? parseFloat(raw.geolocation.lt) : null,
       longitude: raw.geolocation?.ln != null ? parseFloat(raw.geolocation.ln) : null,
       contactPhone: raw.contact?.ph ?? null,
@@ -60,11 +63,13 @@ function mapHotel(raw) {
       website: raw.contact?.wb ?? null,
       rawData: raw,
     },
-    images: images.map((img, i) => ({
-      imageUrl: img.url ?? null,
-      imageSize: img.sz ?? null,
-      sortOrder: i,
-    })),
+    images: images
+      .filter((img) => img.url)
+      .map((img, i) => ({
+        imageUrl: img.url,
+        imageSize: img.sz ?? null,
+        sortOrder: i,
+      })),
     facilities: facilities.map((f) => ({
       facilityCode: String(f.id ?? f.code ?? ''),
       facilityType: f.type ?? null,

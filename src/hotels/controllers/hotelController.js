@@ -1,7 +1,7 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const response = require('../../utils/response');
 const logger = require('../../utils/logger');
-const { searchHotelsService, getHotelByIdService } = require('../services/hotelService');
+const { searchHotelsService, getHotelByIdService, liveSearchHotelsService } = require('../services/hotelService');
 
 /**
  * Search hotels by city
@@ -65,4 +65,16 @@ const getHotelById = asyncHandler(async (req, res) => {
   return response(res, true, 200, 'Hotel fetched successfully', { hotel });
 });
 
-module.exports = { searchHotels, getHotelById };
+const liveSearchHotels = asyncHandler(async (req, res) => {
+  const { cityId, checkIn, checkOut, rooms, currency, nationality, timeoutMs } = req.body;
+
+  logger.info(`Live hotel search: cityId=${cityId}, checkIn=${checkIn}, checkOut=${checkOut}`);
+
+  const result = await liveSearchHotelsService({ cityId, checkIn, checkOut, rooms, currency, nationality, timeoutMs });
+
+  logger.info(`Live hotel search returned ${result.totalResults} hotels for cityId=${cityId}`);
+
+  return response(res, true, 200, 'Hotels fetched successfully', result);
+});
+
+module.exports = { searchHotels, getHotelById, liveSearchHotels };
