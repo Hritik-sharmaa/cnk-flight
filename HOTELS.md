@@ -1,7 +1,6 @@
 # Hotel Module — Developer Documentation
 
-> **Scope:** Static hotel inventory sync and search.
-> Live availability, pricing, and booking are Phase 2.
+> **Scope:** Static hotel inventory sync, DB-backed search, and full live booking flow (Search → Detail → Review → Book).
 
 ---
 
@@ -12,14 +11,14 @@
 3. [Environment Variables](#3-environment-variables)
 4. [Folder Structure](#4-folder-structure)
 5. [System Architecture](#5-system-architecture)
-6. [How the Pieces Talk](#6-how-the-pieces-talk)
+6. [Booking Flow](#6-booking-flow)
 7. [Database Schema](#7-database-schema)
 8. [API Reference](#8-api-reference)
-9. [Mode Toggle (Test vs Live)](#9-mode-toggle-test-vs-live)
-10. [Logging Strategy](#10-logging-strategy)
-11. [Adding a New Supplier](#11-adding-a-new-supplier)
-12. [Known Issues & TODOs](#12-known-issues--todos)
-13. [Testing Guide](#13-testing-guide)
+9. [API Test Guide](#9-api-test-guide)
+10. [Mode Toggle (Test vs Live)](#10-mode-toggle-test-vs-live)
+11. [Logging Strategy](#11-logging-strategy)
+12. [Adding a New Supplier](#12-adding-a-new-supplier)
+13. [Known Issues & TODOs](#13-known-issues--todos)
 
 ---
 
@@ -30,10 +29,11 @@ The hotel module is a **self-contained feature module** inside the `cnk-flight` 
 It is responsible for:
 
 - Syncing static city/region and hotel data from TripJack into Supabase (PostgreSQL)
-- Serving city search and hotel search from the local database (no live supplier calls on search)
-- Logging every outbound TripJack call and every sync job to the database
+- Serving city search and hotel search from the local database (fast, no live supplier calls)
+- Providing a complete **4-step live booking flow** via TripJack v3 APIs (Search → Detail → Review → Book)
+- Managing bookings: poll status, cancel confirmed bookings
 
-The module is designed to be **supplier-agnostic** — hotels and cities are stored using an internal schema, not tightly coupled to TripJack's response structure. A second supplier (HotelBeds, TBO, etc.) can be added without touching the database schema.
+The module is designed to be **supplier-agnostic** — hotels and cities are stored in an internal schema, not tightly coupled to TripJack's response structure.
 
 ---
 
@@ -53,82 +53,71 @@ The module is designed to be **supplier-agnostic** — hotels and cities are sto
 
 ## 3. Environment Variables
 
-Add these to your `.env` file:
-
 ```bash
 # Supabase (hotels share the same instance as the rest of the app)
 SUPABASE_URL=https://your-project.supabase.co        # or http://127.0.0.1:54321 for local
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key_here
 
-# TripJack Hotel API
+# TripJack shared API key (used for all hotel endpoints)
 HOTEL_API_KEY=your_tripjack_api_key_here
-HOTEL_API_BASE_URL_LIVE=https://api.tripjack.com
-HOTEL_API_BASE_URL_TEST=https://apitest.tripjack.com
 
-# Default API mode — 'test' for dev/staging, 'live' for production
-# Can be overridden per-request with ?mode=test or ?mode=live
+# HMS service — live search, pricing, review
+HOTEL_HMS_API_BASE_URL_TEST=https://apitest-hms.tripjack.com
+HOTEL_HMS_API_BASE_URL_LIVE=https://hms.tripjack.com
+
+# Static service — hotel/city inventory sync (same domain as flight)
+HOTEL_STATIC_API_BASE_URL_TEST=https://apitest.tripjack.com
+HOTEL_STATIC_API_BASE_URL_LIVE=https://tripjack.com
+
+# Booker service — book, booking-details, cancel-booking
+HOTEL_BOOKER_API_BASE_URL_TEST=https://apitest-hotel-booker.tripjack.com
+HOTEL_BOOKER_API_BASE_URL_LIVE=https://hotel-booker.tripjack.com
+
+# Default API mode — 'test' in dev/staging, 'live' in production
 HOTEL_MODE=test
 ```
 
-> **Note:** `HOTEL_MODE=test` in your dev `.env` means you never need to pass `?mode=test` in the query string during local development.
+> **Note:** `HOTEL_MODE=test` means you never need to pass `?mode=test` during local development.
+> The live booker URL should be confirmed from your TripJack partner portal.
 
 ---
 
 ## 4. Folder Structure
 
 ```
-src/
-├── app.js                                   Express app — mounts all routes
-├── server.js                                Entry point
+src/hotels/
 │
-├── db/
-│   └── supabase.js                          Supabase client singleton
+├── routes/
+│   ├── syncRoutes.js          POST /sync/cities, POST /sync/hotels
+│   ├── cityRoutes.js          GET  /cities/search
+│   └── hotelRoutes.js         All booking flow + DB search routes
 │
-├── utils/
-│   ├── asyncHandler.js                      Wraps async route handlers — passes errors to next()
-│   ├── response.js                          Standardised JSON response helper
-│   ├── logger.js                            Winston logger (console output, structured JSON)
-│   └── logToDB.js                           Universal async function to write to api_request_logs
+├── controllers/
+│   ├── syncController.js      Orchestrates city/hotel sync jobs
+│   ├── cityController.js      City search from DB
+│   └── hotelController.js     DB search, live booking flow controllers
 │
-├── middleware/
-│   ├── auth.js                              x-api-key header validation
-│   ├── errorHandler.js                      Global error handler — uses response + logger
-│   └── validateRequest.js                   Joi-based request validation (flight module)
+├── services/
+│   ├── syncService.js         Paginated sync loop (TripJack → DB)
+│   ├── cityService.js         Business logic for city search
+│   └── hotelService.js        All booking flow services + DB search
 │
-└── hotels/                                  ← Complete hotel module (self-contained)
-    │
-    ├── index.js                             Module entry — combines all routers, exports one router
-    │
-    ├── routes/
-    │   ├── syncRoutes.js                    POST /sync/cities, POST /sync/hotels
-    │   ├── cityRoutes.js                    GET /cities/search
-    │   └── hotelRoutes.js                   GET /search, GET /:id
-    │
-    ├── controllers/
-    │   ├── syncController.js                Reads ?mode, calls syncService, returns response
-    │   ├── cityController.js                Validates query, calls cityService, returns response
-    │   └── hotelController.js               Validates params, calls hotelService, returns response
-    │
-    ├── services/
-    │   ├── syncService.js                   Orchestrates full paginated sync loop (TripJack → DB)
-    │   ├── cityService.js                   Business logic wrapper over cityRepository
-    │   └── hotelService.js                  Business logic wrapper over hotelRepository
-    │
-    ├── repositories/
-    │   ├── syncLogRepository.js             Create and update rows in supplier_sync_logs
-    │   ├── cityRepository.js                Upsert cities into regions; full-text search cities
-    │   └── hotelRepository.js               Upsert hotels/images/facilities; search; get by ID
-    │
-    ├── providers/
-    │   └── tripjack/
-    │       ├── tripjackHotelClient.js        Axios HTTP client for TripJack hotel static APIs
-    │       │                                 Resolves mode (test/live), logs every call via logToDB
-    │       └── tripjackHotelMapper.js        Normalises raw TripJack response → internal schema
-    │
-    └── validators/
-        ├── cityValidator.js                 Joi: q (min 2 chars), limit
-        ├── hotelValidator.js                Joi: cityId (required), page, limit
-        └── syncValidator.js                 Placeholder — no body validation for Phase 1
+├── repositories/
+│   ├── syncLogRepository.js   Create/update rows in supplier_sync_logs
+│   ├── cityRepository.js      Upsert cities; full-text city search
+│   └── hotelRepository.js     Upsert hotels/images/facilities; paginated search
+│
+├── providers/
+│   └── tripjack/
+│       ├── tripjackHotelClient.js    Axios client — resolves service (hms/static/booker),
+│       │                              mode (test/live), logs every call
+│       ├── tripjackHotelConfig.js    All base URLs and endpoint paths
+│       └── tripjackHotelMapper.js    Normalises TripJack response → internal schema
+│
+└── validators/
+    ├── cityValidator.js        Joi: q (min 2), limit
+    ├── hotelValidator.js       Joi: DB search, live search, detail, review, book, cancel
+    └── syncValidator.js        Placeholder
 ```
 
 ---
@@ -136,156 +125,99 @@ src/
 ## 5. System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Client (B2B / B2C / Admin)                  │
-└────────────────────────┬────────────────────────────────────────┘
-                         │  x-api-key header
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Express.js Microservice                       │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │                     Hotel Module                           │ │
-│  │                                                            │ │
-│  │  routes → controllers → services → repositories           │ │
-│  │                              ↓                             │ │
-│  │                     providers/tripjack                     │ │
-│  └──────────────────────────────┬─────────────────────────────┘ │
-└─────────────────────────────────┼───────────────────────────────┘
-                                  │
-          ┌───────────────────────┼───────────────────────┐
-          │                       │                       │
-          ▼                       ▼                       ▼
-   ┌─────────────┐      ┌─────────────────┐     ┌───────────────┐
-   │  Supabase   │      │  TripJack API   │     │    Winston    │
-   │ (PostgreSQL)│      │  (test / live)  │     │  (console)   │
-   └─────────────┘      └─────────────────┘     └───────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                     Client (B2B / B2C / Admin)                       │
+└───────────────────────────┬──────────────────────────────────────────┘
+                            │  x-api-key header
+                            ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                    Express.js Microservice                            │
+│                                                                      │
+│  routes → validators → controllers → services → repositories         │
+│                                           ↓                          │
+│                              providers/tripjack                      │
+│                    ┌──────────┬────────────┬──────────┐              │
+│                    │   HMS    │   Static   │  Booker  │              │
+│                    │ (search/ │ (inventory │  (book/  │              │
+│                    │ pricing/ │   sync)    │ details/ │              │
+│                    │ review)  │            │ cancel)  │              │
+└────────────────────┴──────────┴────────────┴──────────┴──────────────┘
+                            │
+        ┌───────────────────┼───────────────────┐
+        ▼                   ▼                   ▼
+ ┌─────────────┐   ┌─────────────────┐  ┌──────────────┐
+ │  Supabase   │   │  TripJack APIs  │  │   Winston    │
+ │ (PostgreSQL)│   │  (test / live)  │  │  (console)   │
+ └─────────────┘   └─────────────────┘  └──────────────┘
 ```
 
 **Key design decisions:**
 
-- **Search always comes from the database.** TripJack is never called for city autocomplete or hotel listing. This keeps search fast, cheap, and offline-capable.
-- **TripJack is only called for sync jobs.** Live availability, pricing, and booking (Phase 2) will call TripJack in real time.
-- **Internal IDs are separate from supplier IDs.** The DB uses its own `id` (BIGSERIAL). TripJack IDs are stored in `supplier_hotel_id` and `supplier_region_id`. This allows adding more suppliers without breaking existing data.
+- **DB search never calls TripJack.** Fast, offline-capable, cheap.
+- **Three separate TripJack services.** HMS for live flow (listing/pricing/review), Static for inventory sync, Booker for booking management.
+- **Internal IDs are separate from supplier IDs.** Allows multi-supplier without schema changes.
+- **Unified pagination envelope** on all list responses — same structure everywhere.
 
 ---
 
-## 6. How the Pieces Talk
+## 6. Booking Flow
 
-### Sync Flow (city or hotel)
-
-```
-POST /api/v1/hotels/sync/cities?mode=test
-         │
-         ▼
-   auth middleware           checks x-api-key header
-         │
-         ▼
-   syncController            reads req.query.mode, calls syncService(mode)
-         │
-         ▼
-   syncService               1. creates a row in supplier_sync_logs (started_at)
-         │                   2. enters pagination loop:
-         │                      a. calls tripjackHotelClient.post(path, body, mode)
-         │                      b. maps raw response with tripjackHotelMapper
-         │                      c. upserts batch to DB via cityRepository / hotelRepository
-         │                      d. reads res.next → repeats until next is null
-         │                   3. updates supplier_sync_logs row (completed_at, records_processed)
-         │
-         ▼
-   syncController            returns JSON with recordsProcessed
-```
-
-### Search Flow (city or hotel)
+Every hotel booking follows this strict 4-step sequence. The `correlationId` from Step 1 is carried through all steps. The `bookingId` from Step 3 is required for Step 4.
 
 ```
-GET /api/v1/hotels/cities/search?q=dubai
-         │
-         ▼
-   auth middleware
-         │
-         ▼
-   cityValidator             Joi validates q (min 2), limit
-         │
-         ▼
-   cityController            calls cityService
-         │
-         ▼
-   cityService               thin wrapper, calls cityRepository.searchCities
-         │
-         ▼
-   cityRepository            Supabase .ilike() query on regions table
-         │
-         ▼
-   cityController            wraps result in response(res, true, 200, ...) and returns
+┌──────────────────────────────────────────────────────────────────┐
+│  STEP 1           STEP 2            STEP 3          STEP 4       │
+│                                                                  │
+│  POST             POST              POST             POST        │
+│  /search/live  →  /detail       →   /review      →  /book       │
+│                                                                  │
+│  Returns          Returns           Returns          Returns     │
+│  hotels +         options +         bookingId +      booking     │
+│  correlationId    reviewHash        confirmed price  confirmation│
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### TripJack HTTP Client (with async logging)
-
-```
-tripjackHotelClient.post(path, body, mode)
-    │
-    ├── resolveMode(mode)
-    │       └── mode param  →  HOTEL_MODE env var  →  'live'
-    │
-    ├── picks axios client   →  HOTEL_API_BASE_URL_TEST or HOTEL_API_BASE_URL_LIVE
-    │
-    ├── makes HTTP POST to TripJack
-    │
-    └── finally block (always runs — success or error):
-            └── logToDB(...)   fire-and-forget INSERT to api_request_logs
-                               (never blocks the response — errors silently swallowed)
-```
+> **Important:** The `searchId` (correlationId) is valid for ~15 minutes. Always call Review immediately before Book — prices can change between Detail and booking.
 
 ---
 
 ## 7. Database Schema
 
-Run `table.sql` in the Supabase SQL Editor to create all tables.
+Run `table.sql` in Supabase SQL Editor to create all tables.
 
 ### hotels_regions
-Stores all cities and regions synced from suppliers.
-
 | Column | Type | Notes |
 |---|---|---|
-| id | BIGSERIAL | Internal primary key |
+| id | BIGSERIAL | Internal PK |
 | supplier | VARCHAR(50) | e.g. `tripjack` |
-| supplier_region_id | VARCHAR(100) | TripJack's own region ID |
-| region_type | VARCHAR(20) | CITY, REGION, etc. |
+| supplier_region_id | VARCHAR(100) | TripJack cityRegionId |
 | city_name | TEXT | |
 | country_name | TEXT | |
 | country_code | CHAR(2) | ISO code |
-| full_region_name | TEXT | `city, state, country` — used for search |
-| latitude / longitude | NUMERIC | |
-| is_active | BOOLEAN | Default true |
+| full_region_name | TEXT | Used for text search |
 
-**Index:** GIN on `to_tsvector('simple', full_region_name)` for fast text search.
+**Index:** GIN on `to_tsvector('simple', full_region_name)`
 
 ---
 
 ### hotels_inventory
-Master hotel inventory. Never tightly coupled to one supplier.
-
 | Column | Type | Notes |
 |---|---|---|
-| id | BIGSERIAL | Internal primary key |
-| supplier | VARCHAR(50) | e.g. `tripjack` |
-| supplier_hotel_id | VARCHAR(100) | TripJack's own hotel ID |
-| region_id | BIGINT FK | Links to `regions.id` |
+| id | BIGSERIAL | Internal PK |
+| supplier | VARCHAR(50) | |
+| supplier_hotel_id | VARCHAR(100) | TripJack's `tjHotelId` — use as `hid` in live search |
+| region_id | BIGINT FK | Links to `hotels_regions.id` |
 | name | TEXT | |
-| rating | NUMERIC(2,1) | Star rating |
-| raw_data | JSONB | Full original supplier response — never delete this |
-| search_vector | TSVECTOR | Auto-updated by DB trigger on name + city + country |
-| last_synced_at | TIMESTAMP | When this record was last fetched from supplier |
-
-**Indexes:** GIN on `search_vector`, index on `region_id`, `rating`.
+| rating | NUMERIC(2,1) | |
+| raw_data | JSONB | Full original supplier response |
+| last_synced_at | TIMESTAMP | |
 
 ---
 
 ### hotels_images
 | Column | Type |
 |---|---|
-| hotel_id | BIGINT FK → hotels(id) CASCADE DELETE |
+| hotel_id | BIGINT FK → hotels_inventory(id) CASCADE |
 | image_url | TEXT |
 | sort_order | INT |
 
@@ -294,98 +226,111 @@ Master hotel inventory. Never tightly coupled to one supplier.
 ### hotels_facilities
 | Column | Type |
 |---|---|
-| hotel_id | BIGINT FK → hotels(id) CASCADE DELETE |
+| hotel_id | BIGINT FK → hotels_inventory(id) CASCADE |
 | facility_code | VARCHAR(100) |
 | facility_name | TEXT |
 
 ---
 
-### hotels_sync_logs
-One row per sync job. Records start time, end time, records processed, and success/failure.
-
----
-
-### hotels_api_logs
-One row per outbound TripJack HTTP call. Written **asynchronously** (fire-and-forget) by `tripjackHotelClient`. Fields include `trace_id`, `endpoint`, `method`, `request_body`, `response_status`, `response_time_ms`, `success`, `error_message`.
-
----
-
-### bookings / booking_logs
-Stubbed for Phase 2. Tables exist, no application code yet.
-
----
-
 ## 8. API Reference
 
-All endpoints require the header:
+All endpoints require:
 ```
 x-api-key: <INTERNAL_API_KEY>
+Content-Type: application/json   (POST requests)
 ```
 
-### Internal — Sync
-
-#### `POST /api/v1/hotels/sync/cities`
-Fetches all cities from TripJack static API (paginated) and upserts into `regions`.
-
-Query params:
-| Param | Type | Default | Description |
-|---|---|---|---|
-| mode | string | `HOTEL_MODE` env | `test` or `live` |
-
-Response:
+### Unified Pagination Structure
+All list responses use this consistent envelope:
 ```json
 {
   "success": true,
-  "message": "City sync completed successfully",
-  "data": { "mode": "test", "recordsProcessed": 4218 }
+  "data": {
+    "hotels": [...],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 150,
+      "totalPages": 8,
+      "hasNext": true,
+      "hasPrev": false
+    }
+  }
 }
 ```
 
 ---
 
-#### `POST /api/v1/hotels/sync/hotels`
-Fetches all hotels from TripJack static API (paginated) and upserts into `hotels`, `hotel_images`, `hotel_facilities`.
+### Sync Endpoints
 
-Query params: same as above.
-
-Response:
-```json
-{
-  "success": true,
-  "message": "Hotel sync completed successfully",
-  "data": { "mode": "test", "recordsProcessed": 87450 }
-}
-```
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/hotels/sync/cities` | Sync all cities from TripJack into DB |
+| POST | `/api/v1/hotels/sync/hotels` | Sync all hotels from TripJack into DB |
 
 ---
 
-### Public — Search
+### DB Search (no live TripJack call)
 
-#### `GET /api/v1/hotels/cities/search`
-Search cities from the local `regions` table. No TripJack call.
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/hotels/cities/search?q=dubai` | City autocomplete from DB |
+| GET | `/api/v1/hotels/search?cityId=1&page=1&limit=20` | Paginated hotel list from DB |
+| GET | `/api/v1/hotels/:id` | Single hotel with images + facilities |
 
-Query params:
-| Param | Type | Required | Description |
+---
+
+### Live Booking Flow
+
+| Step | Method | Path | Description |
 |---|---|---|---|
-| q | string | Yes | Min 2 chars |
-| limit | number | No | Default 20, max 100 |
+| 1 | POST | `/api/v1/hotels/search/live` | Live hotel search (TripJack Listing) |
+| 2 | POST | `/api/v1/hotels/detail` | Dynamic pricing + room options |
+| 3 | POST | `/api/v1/hotels/review` | Confirm price + availability |
+| 4 | POST | `/api/v1/hotels/book` | Create booking (instant or hold) |
 
-Response:
+---
+
+### Booking Management
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/hotels/booking/details` | Poll booking status (every 5s until terminal) |
+| POST | `/api/v1/hotels/booking/cancel` | Cancel a confirmed booking |
+
+---
+
+## 9. API Test Guide
+
+> **Auth header required on every request:** `x-api-key: your-api-key`
+> Base URL: `http://localhost:3001`
+
+---
+
+### Step 0-A — City search (get a `cityId`)
+
+```bash
+curl -s "http://localhost:3001/api/v1/hotels/cities/search?q=mumbai&limit=5" \
+  -H "x-api-key: your-api-key" | jq
+```
+
+| Param | Required | Description |
+|---|---|---|
+| q | Yes | Search term, min 2 chars |
+| limit | No | Default 20, max 100 |
+
+**Response:**
 ```json
 {
   "success": true,
-  "message": "Cities fetched successfully",
   "data": {
     "count": 2,
     "cities": [
       {
-        "id": 1,
-        "city_name": "Dubai",
-        "country_name": "United Arab Emirates",
-        "country_code": "AE",
-        "supplier_region_id": "130443",
-        "latitude": 25.204849,
-        "longitude": 55.270782
+        "id": 14,
+        "city_name": "Mumbai",
+        "country_name": "India",
+        "supplier_region_id": "130786"
       }
     ]
   }
@@ -394,198 +339,405 @@ Response:
 
 ---
 
-#### `GET /api/v1/hotels/search`
-List hotels for a city from the local `hotels` table. No TripJack call.
+### Step 0-B — DB hotel search (paginated, no live call)
 
-Query params:
-| Param | Type | Required | Description |
+```bash
+curl -s "http://localhost:3001/api/v1/hotels/search?cityId=14&page=1&limit=10" \
+  -H "x-api-key: your-api-key" | jq
+```
+
+| Param | Required | Description |
+|---|---|---|
+| cityId | Yes | `id` from city search above |
+| page | No | Default 1 |
+| limit | No | Default 20, max 100 |
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "hotels": [
+      {
+        "id": 42,
+        "name": "The Taj Mahal Palace",
+        "rating": 5.0,
+        "property_type": "Hotel",
+        "city_name": "Mumbai",
+        "supplier_hotel_id": "10000001234"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 10,
+      "total": 87,
+      "totalPages": 9,
+      "hasNext": true,
+      "hasPrev": false
+    }
+  }
+}
+```
+
+---
+
+### Step 0-C — Single hotel by DB id (images + facilities)
+
+```bash
+curl -s "http://localhost:3001/api/v1/hotels/42" \
+  -H "x-api-key: your-api-key" | jq
+```
+
+**Response includes:** full hotel row + nested `hotels_images[]` + `hotels_facilities[]`
+
+---
+
+### Step 1 — Live Search
+
+**Option A — by `cityId` (resolves to TripJack cityCode via DB)**
+
+```bash
+curl -s -X POST "http://localhost:3001/api/v1/hotels/search/live" \
+  -H "x-api-key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cityId": 14,
+    "checkIn": "2026-06-20",
+    "checkOut": "2026-06-22",
+    "rooms": [
+      { "adults": 2, "children": 0, "childAge": [] }
+    ],
+    "currency": "INR",
+    "nationality": "100"
+  }' | jq
+```
+
+**Option B — by `hids` only (no DB lookup, direct TripJack hotel IDs)**
+
+```bash
+curl -s -X POST "http://localhost:3001/api/v1/hotels/search/live" \
+  -H "x-api-key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "hids": ["10000001234", "10000005678"],
+    "checkIn": "2026-06-20",
+    "checkOut": "2026-06-22",
+    "rooms": [
+      { "adults": 2, "children": 1, "childAge": [5] }
+    ],
+    "currency": "INR",
+    "nationality": "100"
+  }' | jq
+```
+
+**Option C — `cityId` + `hids` together (city scope + specific hotels)**
+
+```bash
+curl -s -X POST "http://localhost:3001/api/v1/hotels/search/live" \
+  -H "x-api-key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cityId": 14,
+    "hids": ["10000001234"],
+    "checkIn": "2026-06-20",
+    "checkOut": "2026-06-22",
+    "rooms": [
+      { "adults": 2, "children": 0, "childAge": [] }
+    ],
+    "currency": "INR",
+    "nationality": "100",
+    "timeoutMs": 15000
+  }' | jq
+```
+
+> Save `correlationId` and `tjHotelId` from the response — needed in Step 2.
+
+| Field | Type | Required | Description |
 |---|---|---|---|
-| cityId | number | Yes | Internal `regions.id` from city search |
-| page | number | No | Default 1 |
-| limit | number | No | Default 20, max 100 |
+| cityId | number | One of cityId/hids | Internal region ID from city search |
+| hids | array | One of cityId/hids | TripJack hotel IDs — skips DB city lookup entirely (max 100) |
+| checkIn | string | Yes | `YYYY-MM-DD` — must be future date |
+| checkOut | string | Yes | `YYYY-MM-DD` — must be after checkIn |
+| rooms | array | Yes | Min 1, max 5 rooms |
+| rooms[].adults | number | Yes | Min 1, max 9 |
+| rooms[].children | number | No | Default 0, max 6 |
+| rooms[].childAge | array | Conditional | Required when children > 0. One age per child (0–17) |
+| currency | string | No | ISO 4217, default `INR` |
+| nationality | string | No | TripJack country ID, default `100` (India) |
+| correlationId | string | No | Pass your own for end-to-end tracing; auto-generated if omitted |
+| timeoutMs | number | No | 5000–35000 ms |
+
+> Save `correlationId` and `tjHotelId` from the response — needed in Step 2.
 
 ---
 
-#### `GET /api/v1/hotels/:id`
-Get single hotel with images and facilities. No TripJack call.
+### Step 2 — Dynamic Detail / Pricing
 
-Response includes nested `hotel_images` and `hotel_facilities` arrays.
+> Replace `correlationId` and `hid` with values from Step 1.
+
+```bash
+curl -s -X POST "http://localhost:3001/api/v1/hotels/detail" \
+  -H "x-api-key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "correlationId": "PASTE_CORRELATION_ID_FROM_STEP1",
+    "hid": "PASTE_TJHOTELID_FROM_STEP1",
+    "checkIn": "2026-06-20",
+    "checkOut": "2026-06-22",
+    "rooms": [
+      { "adults": 2, "children": 0, "childAge": [] }
+    ],
+    "currency": "INR",
+    "nationality": "100"
+  }' | jq
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| correlationId | string | No | From Step 1 (for tracing) |
+| hid | string | Yes | `tjHotelId` from Step 1 response |
+| checkIn | string | Yes | Must match Step 1 |
+| checkOut | string | Yes | Must match Step 1 |
+| rooms | array | Yes | Must match Step 1 — same count and order |
+| currency | string | No | Default `INR` |
+| nationality | string | No | Default `100` |
+| timeoutMs | number | No | 5000–35000 ms |
+
+> Save `reviewHash` and the `optionId` of the option you want to book — both required in Step 3.
+> **Price formula:** `totalPrice = basePrice + taxes + mf + mft`
 
 ---
 
-## 9. Mode Toggle (Test vs Live)
+### Step 3 — Review
+
+Must be called **immediately before Book**. Confirms real-time price and availability.
+
+> Replace all values with those from Step 1 (`correlationId`, `hid`) and Step 2 (`optionId`, `reviewHash`).
+
+```bash
+curl -s -X POST "http://localhost:3001/api/v1/hotels/review" \
+  -H "x-api-key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "correlationId": "PASTE_CORRELATION_ID",
+    "optionId": "PASTE_OPTION_ID_FROM_STEP2",
+    "reviewHash": "PASTE_REVIEW_HASH_FROM_STEP2",
+    "hid": "PASTE_TJHOTELID"
+  }' | jq
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| correlationId | string | Yes | From Step 1 |
+| optionId | string | Yes | Selected option from Step 2 |
+| reviewHash | string | Yes | From Step 2 detail response |
+| hid | string | Yes | TripJack hotel ID |
+
+> Save `bookingId` from this response — **required for Step 4**.
+> If `isAvailable` is `false` the option is sold out — go back to Step 2 and pick another option.
+> The confirmed price from Review is the authoritative price — use it for display.
+
+---
+
+### Step 4 — Book (Instant)
+
+> Replace `bookingId` with value from Step 3. Set `amount` to the `totalPrice` from Review.
+
+```bash
+curl -s -X POST "http://localhost:3001/api/v1/hotels/book" \
+  -H "x-api-key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bookingId": "PASTE_BOOKING_ID_FROM_STEP3",
+    "type": "HOTEL",
+    "roomTravellerInfo": [
+      {
+        "travelerInfo": [
+          { "ti": "Mr", "pt": "ADULT", "fN": "Rahul", "lN": "Sharma" },
+          { "ti": "Mrs", "pt": "ADULT", "fN": "Priya", "lN": "Sharma" }
+        ]
+      }
+    ],
+    "deliveryInfo": {
+      "emails": ["guest@example.com"],
+      "contacts": ["9876543210"],
+      "code": ["+91"]
+    },
+    "paymentInfos": [
+      { "amount": 27006.42, "type": "HOTEL" }
+    ]
+  }' | jq
+```
+
+**Hold Booking — omit `paymentInfos`:**
+
+```bash
+curl -s -X POST "http://localhost:3001/api/v1/hotels/book" \
+  -H "x-api-key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bookingId": "PASTE_BOOKING_ID_FROM_STEP3",
+    "type": "HOTEL",
+    "roomTravellerInfo": [
+      {
+        "travelerInfo": [
+          { "ti": "Mr", "pt": "ADULT", "fN": "Rahul", "lN": "Sharma" }
+        ]
+      }
+    ],
+    "deliveryInfo": {
+      "emails": ["guest@example.com"],
+      "contacts": ["9876543210"],
+      "code": ["+91"]
+    }
+  }' | jq
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| bookingId | string | Yes | From Step 3 Review |
+| type | string | Yes | Always `"HOTEL"` |
+| roomTravellerInfo | array | Yes | One entry per room, same order as search |
+| travelerInfo[].ti | string | Yes | Title: `Mr` `Mrs` `Ms` `Miss` `Master` |
+| travelerInfo[].pt | string | Yes | `ADULT` or `CHILD` |
+| travelerInfo[].fN | string | Yes | First name (unique across rooms for lead guest) |
+| travelerInfo[].lN | string | Yes | Last name |
+| travelerInfo[].pan | string | Conditional | Required when `panRequired: true` in Review |
+| travelerInfo[].pNum | string | Conditional | Passport number — required for international hotels |
+| deliveryInfo.emails | array | Yes | Confirmation email addresses |
+| deliveryInfo.contacts | array | Yes | Contact phone numbers |
+| deliveryInfo.code | array | No | Dialing codes matching each contact |
+| paymentInfos[].amount | number | Instant only | Omit entirely for Hold Booking |
+| gstInfo | object | Conditional | Required when GST details returned in Detail |
+
+> The Book response only confirms the request was **received**. Confirmation takes up to 180 seconds — poll `/booking/details` every 5 seconds.
+
+---
+
+### Booking Details — Poll Status
+
+```bash
+curl -s -X POST "http://localhost:3001/api/v1/hotels/booking/details" \
+  -H "x-api-key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bookingId": "PASTE_BOOKING_ID"
+  }' | jq
+```
+
+| Status | Type | Description |
+|---|---|---|
+| `IN_PROGRESS` | Pending | Being processed by supplier |
+| `PAYMENT_SUCCESS` | Pending | Payment received; awaiting confirmation |
+| `PAYMENT_PENDING` | Pending | Payment not yet processed |
+| `PENDING` | Pending | Generic pending state |
+| `SUCCESS` | Terminal ✓ | Booking confirmed |
+| `ON_HOLD` | Terminal ✓ | Hold confirmed — confirm before deadline |
+| `ABORTED` | Terminal ✗ | Booking failed, no charge |
+| `FAILED` | Terminal ✗ | Request failed, no charge |
+| `CANCELLATION_PENDING` | Post-booking | TripJack processing cancellation offline |
+| `CANCELLED` | Terminal | Booking cancelled |
+
+> Poll every 5 seconds. Stop at any terminal status or after 180 seconds.
+
+---
+
+### Cancel Booking
+
+```bash
+curl -s -X POST "http://localhost:3001/api/v1/hotels/booking/cancel" \
+  -H "x-api-key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bookingId": "PASTE_BOOKING_ID"
+  }' | jq
+```
+
+> After cancellation the booking moves to `CANCELLATION_PENDING`. Poll `/booking/details` once per day until status becomes `CANCELLED`.
+
+---
+
+### Validation error tests
+
+```bash
+# 400 — missing both cityId and hids
+curl -s -X POST "http://localhost:3001/api/v1/hotels/search/live" \
+  -H "x-api-key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{ "checkIn": "2026-06-20", "checkOut": "2026-06-22", "rooms": [{"adults":1}] }' | jq
+
+# 401 — missing API key
+curl -s "http://localhost:3001/api/v1/hotels/search?cityId=1" | jq
+
+# 404 — hotel not in DB
+curl -s "http://localhost:3001/api/v1/hotels/9999999" \
+  -H "x-api-key: your-api-key" | jq
+```
+
+---
+
+## 10. Mode Toggle (Test vs Live)
 
 The TripJack client supports two API environments. Resolution priority (highest to lowest):
 
 ```
-1. ?mode=test or ?mode=live   — per-request override
-2. HOTEL_MODE=test in .env    — environment default (set once, forget it)
-3. 'live'                     — hard fallback
+1. mode param passed from service call
+2. HOTEL_MODE env var
+3. 'live' as hard fallback
 ```
 
-**Dev `.env`:**
-```
-HOTEL_MODE=test
-```
-
-**Production `.env`:**
-```
-HOTEL_MODE=live
-```
-
-You only need `?mode=live` in dev if you want to make a one-off call against production data.
+**Dev `.env`:** `HOTEL_MODE=test`
+**Production `.env`:** `HOTEL_MODE=live`
 
 ---
 
-## 10. Logging Strategy
-
-Three separate log surfaces — never mix them:
+## 11. Logging Strategy
 
 | Log Surface | Where | Written by | Purpose |
 |---|---|---|---|
-| Winston console | Terminal | Every controller + error handler | Developer visibility, real-time debugging |
-| `api_request_logs` table | Supabase | `logToDB()` via `tripjackHotelClient` | Audit trail for every outbound TripJack call |
-| `supplier_sync_logs` table | Supabase | `syncLogRepository` | Per sync-job audit (start/end/count/success) |
+| Winston console | Terminal | Every controller + error handler | Real-time debugging |
+| `api_request_logs` table | Supabase | `logToDB()` via `tripjackHotelClient` | Audit trail for every TripJack call |
+| `supplier_sync_logs` table | Supabase | `syncLogRepository` | Per sync-job audit |
 
-### `logToDB` — universal async logger
+All TripJack HTTP calls are logged with: `traceId`, `endpoint`, `method`, `requestBody`, `responseStatus`, `responseTimeMs`, `success`, `errorMessage`.
 
-Located at `src/utils/logToDB.js`. Can be used from anywhere in the codebase.
-
-```js
-const logToDB = require('../../utils/logToDB');
-
-// fire-and-forget — no await needed
-logToDB({
-  traceId,           // UUID — correlate logs across tables
-  clientType,        // 'hotel-sync', 'hotel-search', etc.
-  endpoint,          // API path
-  method,            // 'POST', 'GET'
-  requestBody,       // what was sent
-  responseStatus,    // HTTP status received
-  responseTimeMs,    // round-trip time
-  success,           // boolean
-  errorMessage,      // string if failed
-});
-```
-
-> **Rule:** Errors inside `logToDB` are silently swallowed. A logging failure must never break the actual request.
+Logging is **fire-and-forget** — a log failure never breaks the actual request.
 
 ---
 
-## 11. Adding a New Supplier
+## 12. Adding a New Supplier
 
-The schema is already designed for multi-supplier. To add HotelBeds (or any other supplier):
+The schema is designed for multi-supplier. To add HotelBeds (or any other):
 
 **1. Add a new provider folder:**
 ```
 src/hotels/providers/hotelbeds/
-    ├── hotelbedsHotelClient.js    — axios client for HotelBeds APIs
-    └── hotelbedsHotelMapper.js    — map HotelBeds response → same internal schema shape
+    ├── hotelbedsHotelClient.js    — axios client
+    └── hotelbedsHotelMapper.js    — map response → same internal schema
 ```
 
-**2. The mapper must return the same shape as `tripjackHotelMapper`:**
+**2. The mapper must return the same shape:**
 ```js
-// mapCity must return:
-{ supplier, supplierRegionId, cityName, countryName, countryCode, ... }
-
 // mapHotel must return:
 { hotel: { supplier, supplierHotelId, name, rating, ... }, images: [...], facilities: [...] }
 ```
 
-**3. The repositories need no changes.** They accept the normalised shape — they don't care which supplier produced it.
+**3. Repositories need no changes** — they accept the normalised shape.
 
-**4. Add new sync routes if needed** or reuse the same `syncService` pattern with the HotelBeds client.
-
-**5. All HotelBeds data sits in the same `hotels` and `regions` tables**, distinguished by `supplier = 'hotelbeds'`.
+**4. All supplier data sits in the same tables**, distinguished by `supplier = 'hotelbeds'`.
 
 ---
 
-## 12. Known Issues & TODOs
+## 13. Known Issues & TODOs
 
-### `region_id` not linked on hotels (important)
+### `region_id` not linked on all hotels
+Hotels synced before the city-matching fix may have `region_id = null`. The DB search falls back to `city_name` ilike matching, which covers these cases but is slower. A re-sync will resolve `region_id` correctly.
 
-Hotels are synced and stored, but `region_id` (FK to `regions.id`) is **never set**. This means `GET /hotels/search?cityId=123` returns empty results because it filters on `region_id`.
-
-**Fix needed:**
-- During `upsertHotels`, extract the TripJack `regionId` from the hotel raw data
-- Batch-lookup internal `regions.id` from `supplier_region_id` before inserting
-- Set `region_id` on each hotel row before upsert
-
-### hotels_facilities and hotel_images are deleted and re-inserted on every sync
-
-Currently Phase 1 deletes all images/facilities for a batch of hotels and re-inserts them on every sync. This is safe but wasteful. A future optimisation is to compare `last_synced_at` and skip unchanged records.
+### Images/facilities are deleted and re-inserted on every sync
+Safe but wasteful. Future: compare `last_synced_at` and skip unchanged records.
 
 ### No cron schedule
+Sync is triggered manually via HTTP POST. For production, schedule the sync endpoints daily/weekly via a cron job or Supabase Edge Function.
 
-Sync is triggered manually via HTTP POST. For production, a cron job (or Supabase Edge Function scheduled job) should call the sync endpoints on a daily/weekly cadence.
-
-### Booking tables are stubs
-
-`bookings` and `booking_logs` tables exist in `table.sql` but have no application code. These are Phase 2.
-
----
-
-## 13. Testing Guide
-
-### Setup
-
-```bash
-npm install
-# configure .env (see Section 3)
-# run table.sql in Supabase SQL Editor
-npm run dev
-```
-
-### Correct test order
-
-**Cities must be synced before hotels** (so `region_id` lookup can work once that fix is applied).
-
-```bash
-# 1 — Sync cities
-curl -X POST http://localhost:3001/api/v1/hotels/sync/cities \
-  -H "x-api-key: your_key"
-
-# 2 — Sync hotels
-curl -X POST http://localhost:3001/api/v1/hotels/sync/hotels \
-  -H "x-api-key: your_key"
-
-# 3 — Search cities (get an id to use in step 4)
-curl "http://localhost:3001/api/v1/hotels/cities/search?q=dubai" \
-  -H "x-api-key: your_key"
-
-# 4 — Search hotels for that city
-curl "http://localhost:3001/api/v1/hotels/search?cityId=1&page=1&limit=10" \
-  -H "x-api-key: your_key"
-
-# 5 — Get hotel detail
-curl "http://localhost:3001/api/v1/hotels/42" \
-  -H "x-api-key: your_key"
-```
-
-### Verify in Supabase
-
-```sql
-SELECT COUNT(*) FROM hotels_regions;
-SELECT COUNT(*) FROM hotels_inventory;
-SELECT COUNT(*) FROM hotels_images;
-SELECT COUNT(*) FROM hotels_facilities;
-SELECT sync_type, records_processed, success, started_at, completed_at
-  FROM hotels_sync_logs ORDER BY created_at DESC;
-SELECT endpoint, response_status, response_time_ms, success
-  FROM hotels_api_logs ORDER BY created_at DESC LIMIT 10;
-```
-
-### Auth checks
-
-```bash
-# 401 — missing key
-curl http://localhost:3001/api/v1/hotels/cities/search?q=dubai
-
-# 400 — query too short
-curl "http://localhost:3001/api/v1/hotels/cities/search?q=d" \
-  -H "x-api-key: your_key"
-
-# 404 — hotel not found
-curl "http://localhost:3001/api/v1/hotels/9999999" \
-  -H "x-api-key: your_key"
-```
+### Hold booking confirm endpoint not yet wired
+TripJack's confirm-hold endpoint (`POST /oms/v3/hotel/confirm-book`) is not yet implemented. Currently only Instant Booking is fully end-to-end. Hold booking creates the hold; the confirm step needs to be added.

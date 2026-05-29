@@ -109,16 +109,43 @@ CREATE INDEX IF NOT EXISTS idx_hotels_inventory_rating
 CREATE INDEX IF NOT EXISTS idx_hotels_inventory_search
     ON hotels_inventory USING gin (search_vector);
 
+-- Partial B-tree index — every query filters is_deleted = false.
+-- On 500k rows this avoids a full table scan just to skip deleted hotels.
+CREATE INDEX IF NOT EXISTS idx_hotels_inventory_active_region
+    ON hotels_inventory (region_id, rating DESC NULLS LAST)
+    WHERE is_deleted = false;
+
+CREATE INDEX IF NOT EXISTS idx_hotels_inventory_active_rating
+    ON hotels_inventory (rating DESC NULLS LAST, name)
+    WHERE is_deleted = false;
+
+-- ─── One-time backfill ────────────────────────────────────────────────────────
+-- Run this once after deploying the updated trigger to re-index existing rows.
+-- Safe to run multiple times (WHERE search_vector IS NULL skips already-indexed rows).
+-- On 500k rows this will take a few minutes — run during low-traffic window.
+--
+-- UPDATE hotels_inventory
+-- SET updated_at = updated_at   -- touching any column re-fires the trigger
+-- WHERE is_deleted = false;
+--
+-- Or rebuild directly without touching updated_at:
+-- UPDATE hotels_inventory SET search_vector =
+--   setweight(to_tsvector('simple', COALESCE(name, '')),          'A') ||
+--   setweight(to_tsvector('simple', COALESCE(city_name, '')),     'B') ||
+--   setweight(to_tsvector('simple', COALESCE(state_name, '')),    'C') ||
+--   setweight(to_tsvector('simple', COALESCE(country_name, '')),  'C') ||
+--   setweight(to_tsvector('simple', COALESCE(property_type, '')), 'D');
+-- ─────────────────────────────────────────────────────────────────────────────
+
 CREATE OR REPLACE FUNCTION hotels_inventory_search_vector_update()
 RETURNS trigger AS $$
 BEGIN
     NEW.search_vector :=
-        to_tsvector(
-            'simple',
-            COALESCE(NEW.name, '') || ' ' ||
-            COALESCE(NEW.city_name, '') || ' ' ||
-            COALESCE(NEW.country_name, '')
-        );
+        setweight(to_tsvector('simple', COALESCE(NEW.name, '')), 'A') ||
+        setweight(to_tsvector('simple', COALESCE(NEW.city_name, '')), 'B') ||
+        setweight(to_tsvector('simple', COALESCE(NEW.state_name, '')), 'C') ||
+        setweight(to_tsvector('simple', COALESCE(NEW.country_name, '')), 'C') ||
+        setweight(to_tsvector('simple', COALESCE(NEW.property_type, '')), 'D');
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

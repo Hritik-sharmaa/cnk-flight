@@ -117,32 +117,63 @@ async function upsertHotels(hotels) {
   return hotelRows.length;
 }
 
-async function searchHotels({ cityId, page = 1, limit = 20 }) {
-  const from = (page - 1) * limit;
-  const to = from + limit - 1;
+const HOTEL_COLS = 'id, name, rating, property_type, city_name, country_name, address_line, latitude, longitude, supplier_hotel_id';
 
-  // Look up the city record to get city_name for text matching
-  const { data: region, error: regionError } = await supabase
-    .from('hotels_regions')
-    .select('id, city_name')
-    .eq('id', cityId)
-    .single();
+// Sanitize free-text input into a safe plainto_tsquery string.
+// plainto_tsquery is injection-safe — Supabase parameterises it.
+function sanitizeQ(raw) {
+  return raw.trim().replace(/\s+/g, ' ').slice(0, 200);
+}
 
-  if (regionError || !region) return [];
+async function searchHotels({ cityId, q, page = 1, limit = 20 }) {
+  const offset = (page - 1) * limit;
+  const to     = offset + limit - 1;
 
-  // Primary: match by region_id FK (fast, index-backed)
-  // Fallback: match by city_name (handles hotels where region_id not yet resolved)
-  const { data, error } = await supabase
-    .from('hotels_inventory')
-    .select('id, name, rating, property_type, city_name, country_name, address_line, latitude, longitude, supplier_hotel_id')
-    .eq('is_deleted', false)
-    .or(`region_id.eq.${region.id},city_name.ilike.${region.city_name}`)
-    .order('rating', { ascending: false, nullsFirst: false })
-    .order('name')
-    .range(from, to);
+  // ── 1. Resolve cityId → region (B-tree on hotels_regions.id) ────────────
+  let region = null;
+  if (cityId) {
+    const { data, error } = await supabase
+      .from('hotels_regions')
+      .select('id, city_name')
+      .eq('id', cityId)
+      .single();
 
-  if (error) throw error;
-  return data ?? [];
+    if (error || !data) return { hotels: [], total: 0 };
+    region = data;
+  }
+
+  // Must have at least one filter — never do a full-table scan
+  if (!region && !q) return { hotels: [], total: 0 };
+
+  // ── 2. Build filtered query factory ─────────────────────────────────────
+  //   • region filter → uses partial index idx_hotels_inventory_active_region
+  //   • text filter   → uses GIN index on search_vector (plainto_tsquery, safe)
+  //   • is_deleted=false is covered by the partial indexes above
+  const applyFilters = (base) => {
+    let query = base.eq('is_deleted', false);
+    if (region) query = query.eq('region_id', region.id);
+    if (q)      query = query.textSearch('search_vector', sanitizeQ(q), { type: 'plain', config: 'simple' });
+    return query;
+  };
+
+  // ── 3. Run count + data page in parallel ─────────────────────────────────
+  const [{ count, error: countErr }, { data, error }] = await Promise.all([
+    applyFilters(
+      supabase.from('hotels_inventory').select('id', { count: 'exact', head: true })
+    ),
+    applyFilters(
+      supabase.from('hotels_inventory').select(HOTEL_COLS)
+    )
+      .order('rating', { ascending: false, nullsFirst: false })
+      .order('name')
+      .range(offset, to),
+  ]);
+
+
+  if (countErr) throw countErr;
+  if (error)    throw error;
+
+  return { hotels: data ?? [], total: count ?? 0 };
 }
 
 async function getHotelById(id) {

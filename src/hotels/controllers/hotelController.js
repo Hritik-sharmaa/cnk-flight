@@ -1,55 +1,36 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const response = require('../../utils/response');
 const logger = require('../../utils/logger');
-const { searchHotelsService, getHotelByIdService, liveSearchHotelsService } = require('../services/hotelService');
+const {
+  searchHotelsService,
+  getHotelByIdService,
+  liveSearchHotelsService,
+  hotelDetailService,
+  hotelReviewService,
+  hotelBookService,
+  bookingDetailsService,
+  cancelBookingService,
+} = require('../services/hotelService');
 
-/**
- * Search hotels by city
- * @route GET /api/v1/hotels/search
- * @access Private (x-api-key required)
- * @description Returns a paginated list of hotels for a given internal region ID.
- *              Data is served entirely from the local database — no live TripJack calls.
- * @param {Object} req - Express request object
- * @param {Object} req.query.cityId - Internal region ID (required)
- * @param {Object} req.query.page - Page number for pagination (default: 1)
- * @param {Object} req.query.limit - Results per page (default: 20, max: 100)
- * @param {Object} res - Express response object
- * @returns {Object} JSON response with paginated hotel list and count
- */
+// ─── Step 0: DB hotel search ─────────────────────────────────────────────────
+
 const searchHotels = asyncHandler(async (req, res) => {
-  const { cityId, page = '1', limit = '20' } = req.query;
+  const { q, cityId, page, limit } = req.query;
 
-  if (!cityId) {
-    logger.warn('Hotel search attempt without cityId');
-    return response(res, false, 400, 'cityId is required');
-  }
-
-  const hotels = await searchHotelsService({
-    cityId: parseInt(cityId, 10),
-    page: parseInt(page, 10),
-    limit: parseInt(limit, 10),
+  const result = await searchHotelsService({
+    q:      q ?? null,
+    cityId: cityId ? parseInt(cityId, 10) : null,
+    page:   parseInt(page, 10),
+    limit:  parseInt(limit, 10),
   });
 
-  logger.info(`Hotel search for cityId=${cityId} returned ${hotels.length} results`);
+  logger.info(`Hotel search q="${q ?? ''}" cityId=${cityId ?? 'N/A'} → ${result.hotels.length}/${result.pagination.total}`);
 
-  return response(res, true, 200, 'Hotels fetched successfully', {
-    count: hotels.length,
-    page: parseInt(page, 10),
-    hotels,
-  });
+  return response(res, true, 200, 'Hotels fetched successfully', result);
 });
 
-/**
- * Get hotel by ID
- * @route GET /api/v1/hotels/:id
- * @access Private (x-api-key required)
- * @description Fetches full hotel detail including images and facilities
- *              from the local database by internal hotel ID.
- * @param {Object} req - Express request object
- * @param {Object} req.params.id - Internal hotel ID
- * @param {Object} res - Express response object
- * @returns {Object} JSON response with hotel detail, images, and facilities
- */
+// ─── DB: single hotel by ID ──────────────────────────────────────────────────
+
 const getHotelById = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
@@ -65,16 +46,77 @@ const getHotelById = asyncHandler(async (req, res) => {
   return response(res, true, 200, 'Hotel fetched successfully', { hotel });
 });
 
+// ─── Step 1: Live search ─────────────────────────────────────────────────────
+
 const liveSearchHotels = asyncHandler(async (req, res) => {
-  const { cityId, checkIn, checkOut, rooms, currency, nationality, timeoutMs } = req.body;
+  const { cityId, hids, checkIn, checkOut } = req.body;
+  logger.info(`Live hotel search: cityId=${cityId ?? 'N/A'}, hids=${hids?.length ?? 0}, checkIn=${checkIn}, checkOut=${checkOut}`);
 
-  logger.info(`Live hotel search: cityId=${cityId}, checkIn=${checkIn}, checkOut=${checkOut}`);
+  // Pass full body — service spreads it straight to TripJack
+  const result = await liveSearchHotelsService(req.body);
 
-  const result = await liveSearchHotelsService({ cityId, checkIn, checkOut, rooms, currency, nationality, timeoutMs });
-
-  logger.info(`Live hotel search returned ${result.totalResults} hotels for cityId=${cityId}`);
+  logger.info(`Live hotel search returned ${result.pagination.total} total hotels`);
 
   return response(res, true, 200, 'Hotels fetched successfully', result);
 });
 
-module.exports = { searchHotels, getHotelById, liveSearchHotels };
+// ─── Step 2: Dynamic Detail / Pricing ───────────────────────────────────────
+
+const hotelDetail = asyncHandler(async (req, res) => {
+  logger.info(`Hotel detail request: hid=${req.body.hid}`);
+
+  const result = await hotelDetailService(req.body);
+
+  return response(res, true, 200, 'Hotel detail fetched successfully', result);
+});
+
+// ─── Step 3: Review ─────────────────────────────────────────────────────────
+
+const hotelReview = asyncHandler(async (req, res) => {
+  logger.info(`Hotel review request: optionId=${req.body.optionId}, hid=${req.body.hid}`);
+
+  const result = await hotelReviewService(req.body);
+
+  return response(res, true, 200, 'Hotel review completed successfully', result);
+});
+
+// ─── Step 4: Book ───────────────────────────────────────────────────────────
+
+const hotelBook = asyncHandler(async (req, res) => {
+  logger.info(`Hotel book request: bookingId=${req.body.bookingId}`);
+
+  const result = await hotelBookService(req.body);
+
+  return response(res, true, 200, 'Hotel booking initiated successfully', result);
+});
+
+// ─── Booking Details (poll) ──────────────────────────────────────────────────
+
+const bookingDetails = asyncHandler(async (req, res) => {
+  logger.info(`Booking details request: bookingId=${req.body.bookingId}`);
+
+  const result = await bookingDetailsService(req.body);
+
+  return response(res, true, 200, 'Booking details fetched successfully', result);
+});
+
+// ─── Cancel Booking ──────────────────────────────────────────────────────────
+
+const cancelBooking = asyncHandler(async (req, res) => {
+  logger.info(`Cancel booking request: bookingId=${req.body.bookingId}`);
+
+  const result = await cancelBookingService(req.body);
+
+  return response(res, true, 200, 'Booking cancelled successfully', result);
+});
+
+module.exports = {
+  searchHotels,
+  getHotelById,
+  liveSearchHotels,
+  hotelDetail,
+  hotelReview,
+  hotelBook,
+  bookingDetails,
+  cancelBooking,
+};
