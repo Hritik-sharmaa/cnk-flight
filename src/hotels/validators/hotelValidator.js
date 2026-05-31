@@ -14,12 +14,13 @@ const roomSchema = Joi.object({
 // Both can be sent together to narrow a city search by keyword.
 
 const searchHotelsSchema = Joi.object({
-  q:      Joi.string().min(2).max(200).trim().optional(),
-  cityId: Joi.number().integer().optional(),
-  page:   Joi.number().integer().min(1).default(1),
-  limit:  Joi.number().integer().min(1).max(100).default(20),
-}).or('q', 'cityId').messages({
-  'object.missing': 'At least one of q (search term) or cityId is required',
+  q:         Joi.string().min(1).max(200).trim().optional(),
+  cityId:    Joi.number().integer().optional(),
+  cityName:  Joi.string().min(1).max(200).trim().optional(),
+  minRating: Joi.number().min(1).max(5).optional(),
+  sortBy:    Joi.string().valid('rating_desc', 'name_asc').default('rating_desc'),
+  page:      Joi.number().integer().min(1).default(1),
+  limit:     Joi.number().integer().min(1).max(100).default(20),
 });
 
 // ─── Step 1: Live search (Listing API) ──────────────────────────────────────

@@ -15,16 +15,19 @@ const {
 // ─── Step 0: DB hotel search ─────────────────────────────────────────────────
 
 const searchHotels = asyncHandler(async (req, res) => {
-  const { q, cityId, page, limit } = req.query;
+  const { q, cityId, cityName, minRating, sortBy, page, limit } = req.query;
 
   const result = await searchHotelsService({
-    q:      q ?? null,
-    cityId: cityId ? parseInt(cityId, 10) : null,
-    page:   parseInt(page, 10),
-    limit:  parseInt(limit, 10),
+    q:         q ?? null,
+    cityId:    cityId ? parseInt(cityId, 10) : null,
+    cityName:  cityName ?? null,
+    minRating: minRating ? parseFloat(minRating) : null,
+    sortBy:    sortBy ?? 'rating_desc',
+    page:      parseInt(page, 10),
+    limit:     parseInt(limit, 10),
   });
 
-  logger.info(`Hotel search q="${q ?? ''}" cityId=${cityId ?? 'N/A'} → ${result.hotels.length}/${result.pagination.total}`);
+  logger.info(`Hotel search q="${q ?? ''}" city="${cityName ?? cityId ?? 'N/A'}" rating>=${minRating ?? 0} → ${result.hotels.length}/${result.pagination.total}`);
 
   return response(res, true, 200, 'Hotels fetched successfully', result);
 });

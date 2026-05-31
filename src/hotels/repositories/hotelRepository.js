@@ -117,7 +117,7 @@ async function upsertHotels(hotels) {
   return hotelRows.length;
 }
 
-const HOTEL_COLS = 'id, name, rating, property_type, city_name, country_name, address_line, latitude, longitude, supplier_hotel_id';
+const HOTEL_COLS = 'id, name, rating, property_type, city_name, country_name, address_line, latitude, longitude, supplier_hotel_id, description, contact_phone, website';
 
 // Sanitize free-text input into a safe plainto_tsquery string.
 // plainto_tsquery is injection-safe — Supabase parameterises it.
@@ -125,7 +125,7 @@ function sanitizeQ(raw) {
   return raw.trim().replace(/\s+/g, ' ').slice(0, 200);
 }
 
-async function searchHotels({ cityId, q, page = 1, limit = 20 }) {
+async function searchHotels({ cityId, q, minRating, sortBy = 'rating_desc', page = 1, limit = 20 }) {
   const offset = (page - 1) * limit;
   const to     = offset + limit - 1;
 
@@ -142,33 +142,26 @@ async function searchHotels({ cityId, q, page = 1, limit = 20 }) {
     region = data;
   }
 
-  // Must have at least one filter — never do a full-table scan
-  if (!region && !q) return { hotels: [], total: 0 };
-
   // ── 2. Build filtered query factory ─────────────────────────────────────
-  //   • region filter → uses partial index idx_hotels_inventory_active_region
-  //   • text filter   → uses GIN index on search_vector (plainto_tsquery, safe)
-  //   • is_deleted=false is covered by the partial indexes above
   const applyFilters = (base) => {
     let query = base.eq('is_deleted', false);
-    if (region) query = query.eq('region_id', region.id);
-    if (q)      query = query.textSearch('search_vector', sanitizeQ(q), { type: 'plain', config: 'simple' });
+    if (region)    query = query.eq('region_id', region.id);
+    if (q)         query = query.textSearch('search_vector', sanitizeQ(q), { type: 'plain', config: 'simple' });
+    if (minRating) query = query.gte('rating', minRating);
     return query;
   };
 
   // ── 3. Run count + data page in parallel ─────────────────────────────────
-  const [{ count, error: countErr }, { data, error }] = await Promise.all([
-    applyFilters(
-      supabase.from('hotels_inventory').select('id', { count: 'exact', head: true })
-    ),
-    applyFilters(
-      supabase.from('hotels_inventory').select(HOTEL_COLS)
-    )
-      .order('rating', { ascending: false, nullsFirst: false })
-      .order('name')
-      .range(offset, to),
-  ]);
+  const dataQuery = applyFilters(supabase.from('hotels_inventory').select(HOTEL_COLS));
 
+  const orderedQuery = sortBy === 'name_asc'
+    ? dataQuery.order('name').order('rating', { ascending: false, nullsFirst: false })
+    : dataQuery.order('rating', { ascending: false, nullsFirst: false }).order('name');
+
+  const [{ count, error: countErr }, { data, error }] = await Promise.all([
+    applyFilters(supabase.from('hotels_inventory').select('id', { count: 'exact', head: true })),
+    orderedQuery.range(offset, to),
+  ]);
 
   if (countErr) throw countErr;
   if (error)    throw error;

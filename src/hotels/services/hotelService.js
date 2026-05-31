@@ -21,12 +21,41 @@ function buildPagination({ page, limit, total }) {
 
 // ─── Step 0: DB hotel search ─────────────────────────────────────────────────
 
-async function searchHotelsService({ cityId, q, page, limit }) {
-  logger.info(`[hotelService] searchHotels: q="${q ?? ''}", cityId=${cityId ?? 'N/A'}, page=${page}, limit=${limit}`);
-  const { hotels, total } = await searchHotels({ cityId, q, page, limit });
+async function searchHotelsService({ cityId, cityName, q, minRating, sortBy, page, limit }) {
+  // Resolve cityName → cityId when only a name string is provided
+  let resolvedCityId = cityId ?? null;
+  let resolvedCityName = null;
+
+  if (!resolvedCityId && cityName) {
+    const { data: region } = await supabase
+      .from('hotels_regions')
+      .select('id, city_name')
+      .ilike('city_name', `%${cityName.trim()}%`)
+      .limit(1)
+      .maybeSingle();
+
+    if (region) {
+      resolvedCityId  = region.id;
+      resolvedCityName = region.city_name;
+    }
+  }
+
+  logger.info(`[hotelService] searchHotels: q="${q ?? ''}", cityId=${resolvedCityId ?? 'N/A'}, minRating=${minRating ?? 'any'}, sortBy=${sortBy}, page=${page}, limit=${limit}`);
+
+  const { hotels, total } = await searchHotels({
+    cityId:    resolvedCityId,
+    q,
+    minRating,
+    sortBy,
+    page,
+    limit,
+  });
+
   logger.info(`[hotelService] searchHotels: returned ${hotels.length}/${total}`);
+
   return {
     hotels,
+    resolvedCity: resolvedCityName ?? null,
     pagination: buildPagination({ page, limit, total }),
   };
 }
