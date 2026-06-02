@@ -412,3 +412,69 @@ CREATE INDEX IF NOT EXISTS idx_hotels_booking_logs_booking
 
 CREATE INDEX IF NOT EXISTS idx_hotels_booking_logs_created
     ON hotels_booking_logs (created_at);
+
+-- =============================================================
+-- ─── ICICI eCollections ──────────────────────────────────────
+
+-- 9. virtual_accounts
+-- Each row is a Virtual Account Number (VAN) issued to a customer for payment.
+-- VAN format: CNK1 + 8-digit booking/payment ID (e.g. CNK100000001)
+CREATE TABLE IF NOT EXISTS public.virtual_accounts (
+  id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  van                      TEXT NOT NULL UNIQUE,
+  status                   TEXT NOT NULL DEFAULT 'active'
+                             CHECK (status IN ('active', 'expired', 'paid')),
+  expected_amount          NUMERIC(12, 2),
+  expires_at               TIMESTAMPTZ,
+  booking_id               UUID,
+  payment_order_id         UUID,
+  generic_payment_link_id  UUID,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_virtual_accounts_van    ON public.virtual_accounts (van);
+CREATE INDEX IF NOT EXISTS idx_virtual_accounts_status ON public.virtual_accounts (status);
+
+-- 10. icici_ecollection_transactions
+-- One row per UTR (unique transaction reference from ICICI).
+-- Written on MSG HOLD and updated on MIS POSTING.
+CREATE TABLE IF NOT EXISTS public.icici_ecollection_transactions (
+  id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  virtual_account_id          UUID REFERENCES public.virtual_accounts(id),
+  van                         TEXT NOT NULL,
+  client_code                 TEXT NOT NULL DEFAULT '',
+  mode                        TEXT,
+  utr                         TEXT NOT NULL UNIQUE,
+  sender_remark               TEXT,
+  client_account_no           TEXT,
+  amount                      NUMERIC(12, 2),
+  payer_name                  TEXT,
+  payer_acc_number            TEXT,
+  payer_bank_ifsc             TEXT,
+  payer_payment_date          TEXT,
+  bank_internal_txn_number    TEXT,
+  msg_hold_decision           TEXT,
+  msg_hold_at                 TIMESTAMPTZ,
+  msg_hold_raw_payload        JSONB,
+  payment_status              TEXT,
+  mis_posted_at               TIMESTAMPTZ,
+  mis_raw_payload             JSONB,
+  mis_acknowledged_at         TIMESTAMPTZ,
+  created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_icici_txn_utr ON public.icici_ecollection_transactions (utr);
+CREATE INDEX IF NOT EXISTS idx_icici_txn_van ON public.icici_ecollection_transactions (van);
+
+-- 11. icici_request_logs
+-- Logs every inbound hit to ICICI endpoints (stub phase).
+-- Used to confirm ICICI is successfully reaching our URLs during onboarding.
+CREATE TABLE IF NOT EXISTS public.icici_request_logs (
+  id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  endpoint  TEXT NOT NULL,
+  ip        TEXT,
+  raw_body  JSONB,
+  hit_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);

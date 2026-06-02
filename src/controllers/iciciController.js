@@ -18,10 +18,10 @@ const supabase = require('../db/supabase');
  */
 
 // TODO: ICICI APPROVAL — remove this stub and uncomment the real handler below
-const msgHold = async (_req, res) => {
-  // Stub: returns hardcoded Accept so ICICI can verify URL reachability.
-  // Replace with the real implementation once ICICI test keys
-  // (ICICI_PRIVATE_KEY, ICICI_PUBLIC_CERT) are received and set in env vars.
+const msgHold = async (req, res) => {
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
+  logger.info(`[ICICI MSG HOLD STUB] Hit from IP=${ip} body=${JSON.stringify(req.body)}`);
+  supabase.from('icici_request_logs').insert({ endpoint: 'msg-hold', ip, raw_body: req.body || {} }).then();
   return res.status(200).json({ AcceptOrReject: 'Y', Message: 'Accept', Code: '11' });
 };
 
@@ -155,10 +155,10 @@ const msgHold = async (_req, res) => {
  */
 
 // TODO: ICICI APPROVAL — remove this stub and uncomment the real handler below
-const misPosting = async (_req, res) => {
-  // Stub: returns hardcoded Success so ICICI can verify URL reachability.
-  // Replace with the real implementation once ICICI test keys
-  // (ICICI_PRIVATE_KEY, ICICI_PUBLIC_CERT) are received and set in env vars.
+const misPosting = async (req, res) => {
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
+  logger.info(`[ICICI MIS POSTING STUB] Hit from IP=${ip} body=${JSON.stringify(req.body)}`);
+  supabase.from('icici_request_logs').insert({ endpoint: 'mis-posting', ip, raw_body: req.body || {} }).then();
   return res.status(200).json({ Response: 'Success', Code: '11' });
 };
 
