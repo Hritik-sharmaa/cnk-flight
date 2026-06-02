@@ -20,9 +20,20 @@ const supabase = require('../db/supabase');
 // TODO: ICICI APPROVAL — remove this stub and uncomment the real handler below
 const msgHold = async (req, res) => {
   const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
-  logger.info(`[ICICI MSG HOLD STUB] Hit from IP=${ip} body=${JSON.stringify(req.body)}`);
-  supabase.from('icici_request_logs').insert({ endpoint: 'msg-hold', ip, raw_body: req.body || {} }).then();
-  return res.status(200).json({ AcceptOrReject: 'Y', Message: 'Accept', Code: '11' });
+  const response = { AcceptOrReject: 'Y', Message: 'Accept', Code: '11' };
+  let logError = null;
+  try {
+    const { error } = await supabase.from('icici_request_logs').insert({ endpoint: 'msg-hold', ip, raw_body: req.body || {}, response_body: response });
+    logError = error ? error.message : null;
+  } catch (err) {
+    logError = err.message;
+  }
+  if (logError) {
+    logger.error(`[ICICI MSG HOLD STUB] DB log failed: ${logError}`);
+    await supabase.from('icici_request_logs').insert({ endpoint: 'msg-hold', ip, raw_body: req.body || {}, response_body: response, error: logError });
+  }
+  logger.info(`[ICICI MSG HOLD STUB] IP=${ip} response=${JSON.stringify(response)}`);
+  return res.status(200).json(response);
 };
 
 // TODO: ICICI APPROVAL — uncomment this real handler (and remove the stub above)
@@ -157,9 +168,20 @@ const msgHold = async (req, res) => {
 // TODO: ICICI APPROVAL — remove this stub and uncomment the real handler below
 const misPosting = async (req, res) => {
   const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || '';
-  logger.info(`[ICICI MIS POSTING STUB] Hit from IP=${ip} body=${JSON.stringify(req.body)}`);
-  supabase.from('icici_request_logs').insert({ endpoint: 'mis-posting', ip, raw_body: req.body || {} }).then();
-  return res.status(200).json({ Response: 'Success', Code: '11' });
+  const response = { Response: 'Success', Code: '11' };
+  let logError = null;
+  try {
+    const { error } = await supabase.from('icici_request_logs').insert({ endpoint: 'mis-posting', ip, raw_body: req.body || {}, response_body: response });
+    logError = error ? error.message : null;
+  } catch (err) {
+    logError = err.message;
+  }
+  if (logError) {
+    logger.error(`[ICICI MIS POSTING STUB] DB log failed: ${logError}`);
+    await supabase.from('icici_request_logs').insert({ endpoint: 'mis-posting', ip, raw_body: req.body || {}, response_body: response, error: logError });
+  }
+  logger.info(`[ICICI MIS POSTING STUB] IP=${ip} response=${JSON.stringify(response)}`);
+  return res.status(200).json(response);
 };
 
 // TODO: ICICI APPROVAL — uncomment this real handler (and remove the stub above)

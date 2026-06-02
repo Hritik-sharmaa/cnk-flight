@@ -472,9 +472,16 @@ CREATE INDEX IF NOT EXISTS idx_icici_txn_van ON public.icici_ecollection_transac
 -- Logs every inbound hit to ICICI endpoints (stub phase).
 -- Used to confirm ICICI is successfully reaching our URLs during onboarding.
 CREATE TABLE IF NOT EXISTS public.icici_request_logs (
-  id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  endpoint  TEXT NOT NULL,
-  ip        TEXT,
-  raw_body  JSONB,
-  hit_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  endpoint       TEXT NOT NULL,
+  ip             TEXT,
+  raw_body       JSONB,
+  response_body  JSONB,
+  error          TEXT,
+  hit_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Migration: add columns if table already exists
+ALTER TABLE public.icici_request_logs
+  ADD COLUMN IF NOT EXISTS response_body  JSONB,
+  ADD COLUMN IF NOT EXISTS error          TEXT;
