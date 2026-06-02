@@ -45,6 +45,35 @@ CREATE INDEX IF NOT EXISTS idx_hotels_regions_country
 CREATE INDEX IF NOT EXISTS idx_hotels_regions_fullname
     ON hotels_regions USING gin (to_tsvector('simple', COALESCE(full_region_name, '')));
 
+-- Migrations: add columns if the table already exists without them
+ALTER TABLE hotels_regions
+    ADD COLUMN IF NOT EXISTS region_type      VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS city_name        TEXT,
+    ADD COLUMN IF NOT EXISTS region_name      TEXT,
+    ADD COLUMN IF NOT EXISTS state_name       TEXT,
+    ADD COLUMN IF NOT EXISTS country_name     TEXT,
+    ADD COLUMN IF NOT EXISTS country_code     CHAR(2),
+    ADD COLUMN IF NOT EXISTS full_region_name TEXT,
+    ADD COLUMN IF NOT EXISTS normalized_name  TEXT,
+    ADD COLUMN IF NOT EXISTS latitude         NUMERIC(10, 6),
+    ADD COLUMN IF NOT EXISTS longitude        NUMERIC(10, 6),
+    ADD COLUMN IF NOT EXISTS is_active        BOOLEAN   DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS updated_at       TIMESTAMP DEFAULT NOW();
+
+-- Add unique constraint if it was missing from the original table creation
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'hotels_regions_supplier_supplier_region_id_key'
+          AND conrelid = 'hotels_regions'::regclass
+    ) THEN
+        ALTER TABLE hotels_regions
+            ADD CONSTRAINT hotels_regions_supplier_supplier_region_id_key
+            UNIQUE (supplier, supplier_region_id);
+    END IF;
+END $$;
+
 -- =============================================================
 
 -- 2. hotels_inventory
@@ -106,6 +135,46 @@ CREATE INDEX IF NOT EXISTS idx_hotels_inventory_region
 CREATE INDEX IF NOT EXISTS idx_hotels_inventory_rating
     ON hotels_inventory (rating);
 
+-- Migrations: add columns if the table already exists without them
+ALTER TABLE hotels_inventory
+    ADD COLUMN IF NOT EXISTS unica_id       VARCHAR(100),
+    ADD COLUMN IF NOT EXISTS region_id      BIGINT REFERENCES hotels_regions (id),
+    ADD COLUMN IF NOT EXISTS slug           TEXT,
+    ADD COLUMN IF NOT EXISTS property_type  VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS description    JSONB,
+    ADD COLUMN IF NOT EXISTS rating         NUMERIC(2, 1),
+    ADD COLUMN IF NOT EXISTS is_deleted     BOOLEAN   DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS latitude       NUMERIC(10, 6),
+    ADD COLUMN IF NOT EXISTS longitude      NUMERIC(10, 6),
+    ADD COLUMN IF NOT EXISTS address_line   TEXT,
+    ADD COLUMN IF NOT EXISTS postal_code    VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS city_name      TEXT,
+    ADD COLUMN IF NOT EXISTS state_name     TEXT,
+    ADD COLUMN IF NOT EXISTS country_name   TEXT,
+    ADD COLUMN IF NOT EXISTS country_code   CHAR(2),
+    ADD COLUMN IF NOT EXISTS contact_phone  TEXT,
+    ADD COLUMN IF NOT EXISTS contact_email  TEXT,
+    ADD COLUMN IF NOT EXISTS contact_fax    TEXT,
+    ADD COLUMN IF NOT EXISTS website        TEXT,
+    ADD COLUMN IF NOT EXISTS raw_data       JSONB,
+    ADD COLUMN IF NOT EXISTS search_vector  TSVECTOR,
+    ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMP,
+    ADD COLUMN IF NOT EXISTS updated_at     TIMESTAMP DEFAULT NOW();
+
+-- Add unique constraint if it was missing from the original table creation
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'hotels_inventory_supplier_supplier_hotel_id_key'
+          AND conrelid = 'hotels_inventory'::regclass
+    ) THEN
+        ALTER TABLE hotels_inventory
+            ADD CONSTRAINT hotels_inventory_supplier_supplier_hotel_id_key
+            UNIQUE (supplier, supplier_hotel_id);
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_hotels_inventory_search
     ON hotels_inventory USING gin (search_vector);
 
@@ -118,24 +187,6 @@ CREATE INDEX IF NOT EXISTS idx_hotels_inventory_active_region
 CREATE INDEX IF NOT EXISTS idx_hotels_inventory_active_rating
     ON hotels_inventory (rating DESC NULLS LAST, name)
     WHERE is_deleted = false;
-
--- ─── One-time backfill ────────────────────────────────────────────────────────
--- Run this once after deploying the updated trigger to re-index existing rows.
--- Safe to run multiple times (WHERE search_vector IS NULL skips already-indexed rows).
--- On 500k rows this will take a few minutes — run during low-traffic window.
---
--- UPDATE hotels_inventory
--- SET updated_at = updated_at   -- touching any column re-fires the trigger
--- WHERE is_deleted = false;
---
--- Or rebuild directly without touching updated_at:
--- UPDATE hotels_inventory SET search_vector =
---   setweight(to_tsvector('simple', COALESCE(name, '')),          'A') ||
---   setweight(to_tsvector('simple', COALESCE(city_name, '')),     'B') ||
---   setweight(to_tsvector('simple', COALESCE(state_name, '')),    'C') ||
---   setweight(to_tsvector('simple', COALESCE(country_name, '')),  'C') ||
---   setweight(to_tsvector('simple', COALESCE(property_type, '')), 'D');
--- ─────────────────────────────────────────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION hotels_inventory_search_vector_update()
 RETURNS trigger AS $$
@@ -157,6 +208,17 @@ CREATE TRIGGER trg_hotels_inventory_search_vector
     FOR EACH ROW
     EXECUTE FUNCTION hotels_inventory_search_vector_update();
 
+-- Backfill existing rows that have search_vector = NULL.
+-- Safe to re-run; skips already-indexed rows. Takes a few minutes on 500k rows.
+UPDATE hotels_inventory
+SET search_vector =
+    setweight(to_tsvector('simple', COALESCE(name, '')),          'A') ||
+    setweight(to_tsvector('simple', COALESCE(city_name, '')),     'B') ||
+    setweight(to_tsvector('simple', COALESCE(state_name, '')),    'C') ||
+    setweight(to_tsvector('simple', COALESCE(country_name, '')),  'C') ||
+    setweight(to_tsvector('simple', COALESCE(property_type, '')), 'D')
+WHERE search_vector IS NULL;
+
 -- =============================================================
 
 -- 3. hotels_images
@@ -175,6 +237,11 @@ CREATE TABLE IF NOT EXISTS hotels_images (
 CREATE INDEX IF NOT EXISTS idx_hotels_images_hotel
     ON hotels_images (hotel_id);
 
+-- Migrations: add columns if the table already exists without them
+ALTER TABLE hotels_images
+    ADD COLUMN IF NOT EXISTS image_size  VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS sort_order  INT DEFAULT 0;
+
 -- =============================================================
 
 -- 4. hotels_facilities
@@ -192,6 +259,12 @@ CREATE TABLE IF NOT EXISTS hotels_facilities (
 
 CREATE INDEX IF NOT EXISTS idx_hotels_facilities_hotel
     ON hotels_facilities (hotel_id);
+
+-- Migrations: add columns if the table already exists without them
+ALTER TABLE hotels_facilities
+    ADD COLUMN IF NOT EXISTS facility_code  VARCHAR(100),
+    ADD COLUMN IF NOT EXISTS facility_type  VARCHAR(100),
+    ADD COLUMN IF NOT EXISTS facility_name  TEXT;
 
 -- =============================================================
 
