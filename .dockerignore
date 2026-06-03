@@ -10,3 +10,7 @@ README.md
 API.md
 supabase/
 .DS_Store
+*.pem
+*.cer
+*.crt
+*.key
