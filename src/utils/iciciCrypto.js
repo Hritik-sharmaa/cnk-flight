@@ -76,9 +76,14 @@ function encryptIciciResponse(payload) {
   );
 
   return {
+    requestId: '',
+    service: '',
     encryptedKey: encryptedKey.toString('base64'),
+    oaepHashingAlgorithm: 'NONE',
     iv: iv.toString('base64'),
     encryptedData: encrypted.toString('base64'),
+    clientInfo: '',
+    optionalParam: '',
   };
 }
 
