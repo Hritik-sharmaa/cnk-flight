@@ -51,6 +51,10 @@ function mapFareOption(priceOption) {
   return {
     priceId: priceOption.id,
     fareIdentifier: priceOption.fareIdentifier,
+    // Special Return pairing fields (Tripjack errCode 1080 — both legs must have
+    // compatible sri/msri: onward.sri must appear in return.msri and vice versa).
+    sri: priceOption.sri ?? null,
+    msri: Array.isArray(priceOption.msri) ? priceOption.msri : [],
     refundable: adultFare?.rT,   // 0=No, 1=Yes, 2=Partial
     adult: adultFare ? {
       totalFare: adultFare.fC?.TF,

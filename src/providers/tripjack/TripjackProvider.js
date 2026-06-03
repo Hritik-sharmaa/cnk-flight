@@ -53,8 +53,10 @@ class TripjackProvider extends FlightProvider {
     return this._post('/oms/v1/air/fare-validate', { bookingId });
   }
 
-  async confirmBook(bookingId, paymentInfos) {
-    return this._post('/oms/v1/air/confirm-book', { bookingId, paymentInfos });
+  async confirmBook(bookingId, paymentInfos, gstInfo) {
+    const body = { bookingId, paymentInfos };
+    if (gstInfo) body.gstInfo = gstInfo;
+    return this._post('/oms/v1/air/confirm-book', body);
   }
 
   async bookingDetails(bookingId, requirePaxPricing = true) {

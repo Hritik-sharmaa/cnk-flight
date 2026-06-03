@@ -24,7 +24,7 @@ const fareValidate = wrap(async (req) => flightService.fareValidate(req.body.boo
 const confirmFare = wrap(async (req) => flightService.confirmFare(req.body.bookingId));
 
 const confirmBook = wrap(async (req) =>
-  flightService.confirmBook(req.body.bookingId, req.body.paymentInfos)
+  flightService.confirmBook(req.body.bookingId, req.body.paymentInfos, req.body.gstInfo)
 );
 
 const bookingDetails = wrap(async (req) =>

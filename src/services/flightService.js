@@ -41,7 +41,7 @@ async function confirmFare(bookingId) {
   return getProvider().confirmFare(bookingId);
 }
 
-async function confirmBook(bookingId, paymentInfos) {
+async function confirmBook(bookingId, paymentInfos, gstInfo) {
   // Tripjack requires /oms/v1/air/fare-validate (pre-ticket) before confirm-book in the Hold flow.
   const fareCheck = await getProvider().confirmFare(bookingId);
 
@@ -61,7 +61,7 @@ async function confirmBook(bookingId, paymentInfos) {
     throw new Error('Flight fare has changed since the hold was placed. Please start a new booking to get the current fare.');
   }
 
-  const raw = await getProvider().confirmBook(bookingId, paymentInfos);
+  const raw = await getProvider().confirmBook(bookingId, paymentInfos, gstInfo);
 
   if (raw.status?.success === false) {
     const err = raw.errors?.[0];
