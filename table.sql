@@ -454,7 +454,9 @@ CREATE TABLE IF NOT EXISTS public.icici_ecollection_transactions (
   payer_bank_ifsc             TEXT,
   payer_payment_date          TEXT,
   bank_internal_txn_number    TEXT,
+  userid                      TEXT,
   msg_hold_decision           TEXT,
+  msg_hold_reject_reason      TEXT,
   msg_hold_at                 TIMESTAMPTZ,
   msg_hold_raw_payload        JSONB,
   payment_status              TEXT,
@@ -485,3 +487,7 @@ CREATE TABLE IF NOT EXISTS public.icici_request_logs (
 ALTER TABLE public.icici_request_logs
   ADD COLUMN IF NOT EXISTS response_body  JSONB,
   ADD COLUMN IF NOT EXISTS error          TEXT;
+
+ALTER TABLE public.icici_ecollection_transactions
+  ADD COLUMN IF NOT EXISTS userid                 TEXT,
+  ADD COLUMN IF NOT EXISTS msg_hold_reject_reason TEXT;
