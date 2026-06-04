@@ -3,6 +3,18 @@ const logger = require('../utils/logger');
 const supabase = require('../db/supabase');
 const { decryptIciciPayload, encryptIciciResponse } = require('../utils/iciciCrypto');
 
+// Encrypts every response. Returns 500 if encryption fails — never sends plain.
+// A 500 is safer than leaking payment data unencrypted.
+// ICICI handles non-response via Deemed Accept (MSG HOLD) or retry (MIS POSTING).
+function sendResponse(res, payload) {
+  try {
+    return res.status(200).json(encryptIciciResponse(payload));
+  } catch (encErr) {
+    logger.error('[ICICI] Response encryption failed — refusing to send plain response:', encErr.message);
+    return res.status(500).end();
+  }
+}
+
 /**
  * ICICI eCollections — MSG HOLD
  *
@@ -47,7 +59,7 @@ const msgHold = async (req, res) => {
         logger.warn(`[ICICI MSG HOLD] Rejected request from unexpected IP: ${ip}`);
         const resp = { AcceptOrReject: 'N', Message: 'Unauthorized source', Code: '12' };
         finishLog(resp, `IP not whitelisted: ${ip}`);
-        return res.status(200).json(resp);
+        return sendResponse(res, resp);
       }
     }
 
@@ -58,7 +70,7 @@ const msgHold = async (req, res) => {
       logger.error('[ICICI MSG HOLD] Decryption failed:', cryptoErr);
       const resp = { AcceptOrReject: 'N', Message: 'Decryption failed', Code: '12' };
       finishLog(resp, `Decryption failed: ${cryptoErr.message}`);
-      return res.status(200).json(resp);
+      return sendResponse(res, resp);
     }
 
     const {
@@ -71,7 +83,7 @@ const msgHold = async (req, res) => {
       logger.error('[ICICI MSG HOLD] Missing required fields in decrypted payload');
       const resp = { AcceptOrReject: 'N', Message: 'Missing required fields', Code: '12' };
       finishLog(resp, `Missing required fields. Present keys: ${Object.keys(payload).join(', ')}`);
-      return res.status(200).json(resp);
+      return sendResponse(res, resp);
     }
 
     const amountNum = parseFloat(Amount);
@@ -87,7 +99,7 @@ const msgHold = async (req, res) => {
       logger.error('[ICICI MSG HOLD] DB error looking up VAN:', vaErr);
       const resp = { AcceptOrReject: 'N', Message: 'Internal error', Code: '12' };
       finishLog(resp, `DB error on VAN lookup: ${vaErr.message}`);
-      return res.status(200).json(resp);
+      return sendResponse(res, resp);
     }
 
     // Determine accept/reject
@@ -156,18 +168,12 @@ const msgHold = async (req, res) => {
       `[ICICI MSG HOLD] VAN=${VirtualAccountNumber} UTR=${UTR} Mode=${Mode} Amount=${Amount} Decision=${decision} (${Date.now() - startMs}ms)`
     );
 
-    try {
-      const encrypted = encryptIciciResponse(responsePayload);
-      return res.status(200).json(encrypted);
-    } catch (encErr) {
-      logger.warn('[ICICI MSG HOLD] Encryption of response failed, sending plain:', encErr.message);
-      return res.status(200).json(responsePayload);
-    }
+    return sendResponse(res, responsePayload);
   } catch (err) {
     logger.error('[ICICI MSG HOLD] Unhandled error:', err);
     const resp = { AcceptOrReject: 'N', Message: 'Internal server error', Code: '12' };
     finishLog(resp, `Unhandled error: ${err.message}`);
-    return res.status(200).json(resp);
+    return sendResponse(res, resp);
   }
 };
 
@@ -209,7 +215,7 @@ const misPosting = async (req, res) => {
         logger.warn(`[ICICI MIS POSTING] Rejected request from unexpected IP: ${ip}`);
         const resp = { Response: 'Unauthorized source', Code: '99' };
         finishLog(resp, `IP not whitelisted: ${ip}`);
-        return res.status(200).json(resp);
+        return sendResponse(res, resp);
       }
     }
 
@@ -220,7 +226,7 @@ const misPosting = async (req, res) => {
       logger.error('[ICICI MIS POSTING] Decryption failed:', cryptoErr);
       const resp = { Response: 'Decryption failed', Code: '99' };
       finishLog(resp, `Decryption failed: ${cryptoErr.message}`);
-      return res.status(200).json(resp);
+      return sendResponse(res, resp);
     }
 
     const {
@@ -232,7 +238,7 @@ const misPosting = async (req, res) => {
     if (!VirtualAccountNumber || !UTR || !Amount || !Mode) {
       const resp = { Response: 'Missing required fields', Code: '99' };
       finishLog(resp, `Missing required fields. Present keys: ${Object.keys(payload).join(', ')}`);
-      return res.status(200).json(resp);
+      return sendResponse(res, resp);
     }
 
     const amountNum = parseFloat(Amount);
@@ -248,12 +254,7 @@ const misPosting = async (req, res) => {
       logger.warn(`[ICICI MIS POSTING] Duplicate UTR received: ${UTR}`);
       const resp = { Response: 'Duplicate UTR', Code: '06' };
       finishLog(resp, `Duplicate UTR: ${UTR}`);
-      try {
-        const encrypted = encryptIciciResponse(resp);
-        return res.status(200).json(encrypted);
-      } catch {
-        return res.status(200).json(resp);
-      }
+      return sendResponse(res, resp);
     }
 
     // Upsert transaction with MIS data (may be first time if MSG HOLD was Deemed Accept)
@@ -300,7 +301,7 @@ const misPosting = async (req, res) => {
       logger.error('[ICICI MIS POSTING] Transaction upsert error:', upsertErr);
       const resp = { Response: 'Internal error', Code: '99' };
       finishLog(resp, `Transaction upsert failed: ${upsertErr.message}`);
-      return res.status(200).json(resp);
+      return sendResponse(res, resp);
     }
 
     // Mark virtual account as paid
@@ -330,18 +331,12 @@ const misPosting = async (req, res) => {
 
     const resp = { Response: 'Success', Code: '11' };
     finishLog(resp);
-    try {
-      const encrypted = encryptIciciResponse(resp);
-      return res.status(200).json(encrypted);
-    } catch (encErr) {
-      logger.warn('[ICICI MIS POSTING] Encryption of response failed, sending plain:', encErr.message);
-      return res.status(200).json(resp);
-    }
+    return sendResponse(res, resp);
   } catch (err) {
     logger.error('[ICICI MIS POSTING] Unhandled error:', err);
     const resp = { Response: 'Internal server error', Code: '99' };
     finishLog(resp, `Unhandled error: ${err.message}`);
-    return res.status(200).json(resp);
+    return sendResponse(res, resp);
   }
 };
 
