@@ -54,30 +54,27 @@ async function decryptIciciPayload(body) {
  * @param {Record<string, string>} payload
  * @returns {{ encryptedKey: string, iv: string, encryptedData: string }}
  */
-function encryptIciciResponse(payload) {
+function encryptIciciResponse(payload, requestId = '', service = '') {
   const iciciCert = process.env.ICICI_PUBLIC_CERT;
   if (!iciciCert) throw new Error('ICICI_PUBLIC_CERT env var is not set');
 
-  // Generate random 16-byte session key (AES-128) and IV
   const sessionKey = crypto.randomBytes(16);
   const iv = crypto.randomBytes(16);
 
-  // Encrypt the response JSON with AES/CBC/PKCS5Padding
   const cipher = crypto.createCipheriv('aes-128-cbc', sessionKey, iv);
   const encrypted = Buffer.concat([
     cipher.update(JSON.stringify(payload), 'utf8'),
     cipher.final(),
   ]);
 
-  // Encrypt the session key with ICICI's RSA public cert (PKCS1 padding)
   const encryptedKey = crypto.publicEncrypt(
     { key: iciciCert, padding: crypto.constants.RSA_PKCS1_PADDING },
     sessionKey
   );
 
   return {
-    requestId: '',
-    service: '',
+    requestId: requestId || '',
+    service: service || '',
     encryptedKey: encryptedKey.toString('base64'),
     oaepHashingAlgorithm: 'NONE',
     iv: iv.toString('base64'),

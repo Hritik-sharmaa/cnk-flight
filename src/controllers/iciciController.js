@@ -6,9 +6,9 @@ const { decryptIciciPayload, encryptIciciResponse } = require('../utils/iciciCry
 // Encrypts every response. Returns 500 if encryption fails — never sends plain.
 // A 500 is safer than leaking payment data unencrypted.
 // ICICI handles non-response via Deemed Accept (MSG HOLD) or retry (MIS POSTING).
-function sendResponse(res, payload) {
+function sendResponse(res, payload, requestId = '', service = '') {
   try {
-    return res.status(200).json(encryptIciciResponse(payload));
+    return res.status(200).json(encryptIciciResponse(payload, requestId, service));
   } catch (encErr) {
     logger.error('[ICICI] Response encryption failed — refusing to send plain response:', encErr.message);
     return res.status(500).end();
@@ -78,6 +78,9 @@ const msgHold = async (req, res) => {
       ClientAccountNo, Amount, PayerName, PayerAccNumber, PayerBankIFSC,
       PayerPaymentDate, BankInternalTransactionNumber,
     } = payload;
+
+    const reqId = req.body?.requestId || '';
+    const svcName = req.body?.service || '';
 
     if (!VirtualAccountNumber || !UTR || !Amount || !Mode) {
       logger.error('[ICICI MSG HOLD] Missing required fields in decrypted payload');
@@ -172,7 +175,7 @@ const msgHold = async (req, res) => {
       `[ICICI MSG HOLD] VAN=${VirtualAccountNumber} UTR=${UTR} Mode=${Mode} Amount=${Amount} Decision=${decision} (${Date.now() - startMs}ms)`
     );
 
-    return sendResponse(res, responsePayload);
+    return sendResponse(res, responsePayload, reqId, svcName);
   } catch (err) {
     logger.error('[ICICI MSG HOLD] Unhandled error:', err);
     const resp = { AcceptOrReject: 'N', Message: 'Internal server error', Code: '12' };
@@ -239,10 +242,13 @@ const misPosting = async (req, res) => {
       PayerPaymentDate, BankInternalTransactionNumber,
     } = payload;
 
+    const reqId = req.body?.requestId || '';
+    const svcName = req.body?.service || '';
+
     if (!VirtualAccountNumber || !UTR || !Amount || !Mode) {
       const resp = { Response: 'Missing required fields', Code: '99' };
       finishLog(resp, `Missing required fields. Present keys: ${Object.keys(payload).join(', ')}`);
-      return sendResponse(res, resp);
+      return sendResponse(res, resp, reqId, svcName);
     }
 
     const amountNum = parseFloat(Amount);
@@ -366,7 +372,7 @@ const misPosting = async (req, res) => {
 
     const resp = { Response: 'Success', Code: '11' };
     finishLog(resp, amountMismatchNote || null, VirtualAccountNumber, UTR);
-    return sendResponse(res, resp);
+    return sendResponse(res, resp, reqId, svcName);
   } catch (err) {
     logger.error('[ICICI MIS POSTING] Unhandled error:', err);
     const resp = { Response: 'Internal server error', Code: '99' };
