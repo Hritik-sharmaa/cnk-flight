@@ -423,7 +423,7 @@ CREATE TABLE IF NOT EXISTS public.virtual_accounts (
   id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   van                      TEXT NOT NULL UNIQUE,
   status                   TEXT NOT NULL DEFAULT 'active'
-                             CHECK (status IN ('active', 'expired', 'paid')),
+                             CHECK (status IN ('active', 'expired', 'paid', 'paid_partial')),
   expected_amount          NUMERIC(12, 2),
   expires_at               TIMESTAMPTZ,
   booking_id               UUID,
@@ -460,6 +460,7 @@ CREATE TABLE IF NOT EXISTS public.icici_ecollection_transactions (
   msg_hold_at                 TIMESTAMPTZ,
   msg_hold_raw_payload        JSONB,
   payment_status              TEXT,
+  expected_amount_at_credit   NUMERIC(12, 2),
   mis_posted_at               TIMESTAMPTZ,
   mis_raw_payload             JSONB,
   mis_acknowledged_at         TIMESTAMPTZ,
@@ -477,6 +478,8 @@ CREATE TABLE IF NOT EXISTS public.icici_request_logs (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   endpoint       TEXT NOT NULL,
   ip             TEXT,
+  van            TEXT,
+  utr            TEXT,
   raw_body       JSONB,
   response_body  JSONB,
   error          TEXT,
@@ -486,8 +489,22 @@ CREATE TABLE IF NOT EXISTS public.icici_request_logs (
 -- Migration: add columns if table already exists
 ALTER TABLE public.icici_request_logs
   ADD COLUMN IF NOT EXISTS response_body  JSONB,
-  ADD COLUMN IF NOT EXISTS error          TEXT;
+  ADD COLUMN IF NOT EXISTS error          TEXT,
+  ADD COLUMN IF NOT EXISTS van            TEXT,
+  ADD COLUMN IF NOT EXISTS utr            TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_icici_request_logs_van ON public.icici_request_logs (van);
+CREATE INDEX IF NOT EXISTS idx_icici_request_logs_utr ON public.icici_request_logs (utr);
 
 ALTER TABLE public.icici_ecollection_transactions
-  ADD COLUMN IF NOT EXISTS userid                 TEXT,
-  ADD COLUMN IF NOT EXISTS msg_hold_reject_reason TEXT;
+  ADD COLUMN IF NOT EXISTS userid                   TEXT,
+  ADD COLUMN IF NOT EXISTS msg_hold_reject_reason   TEXT,
+  ADD COLUMN IF NOT EXISTS expected_amount_at_credit NUMERIC(12, 2);
+
+-- Update virtual_accounts status CHECK to include paid_partial
+ALTER TABLE public.virtual_accounts
+  DROP CONSTRAINT IF EXISTS virtual_accounts_status_check;
+
+ALTER TABLE public.virtual_accounts
+  ADD CONSTRAINT virtual_accounts_status_check
+  CHECK (status IN ('active', 'expired', 'paid', 'paid_partial'));

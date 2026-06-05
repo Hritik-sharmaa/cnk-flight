@@ -44,9 +44,9 @@ const msgHold = async (req, res) => {
   }).then();
 
   // Helper — updates the log row on every exit path (fire-and-forget, never blocks response)
-  const finishLog = (response, error = null) => {
+  const finishLog = (response, error = null, van = null, utr = null) => {
     supabase.from('icici_request_logs')
-      .update({ response_body: response ?? null, error: error ?? null })
+      .update({ response_body: response ?? null, error: error ?? null, ...(van && { van }), ...(utr && { utr }) })
       .eq('id', logId)
       .then();
   };
@@ -87,6 +87,11 @@ const msgHold = async (req, res) => {
     }
 
     const amountNum = parseFloat(Amount);
+    if (isNaN(amountNum)) {
+      const resp = { AcceptOrReject: 'N', Message: 'Invalid amount', Code: '12' };
+      finishLog(resp, `Invalid amount value: ${Amount}`);
+      return sendResponse(res, resp);
+    }
 
     // Look up the virtual account
     const { data: va, error: vaErr } = await supabase
@@ -158,10 +163,9 @@ const msgHold = async (req, res) => {
 
     if (txnErr) {
       logger.error('[ICICI MSG HOLD] Transaction upsert error:', txnErr);
-      // Still respond to ICICI — don't block on our DB write failure
-      finishLog(responsePayload, `Transaction upsert failed: ${txnErr.message}`);
+      finishLog(responsePayload, `Transaction upsert failed: ${txnErr.message}`, VirtualAccountNumber, UTR);
     } else {
-      finishLog(responsePayload, rejectReason || null);
+      finishLog(responsePayload, rejectReason || null, VirtualAccountNumber, UTR);
     }
 
     logger.info(
@@ -200,9 +204,9 @@ const misPosting = async (req, res) => {
     error: null,
   }).then();
 
-  const finishLog = (response, error = null) => {
+  const finishLog = (response, error = null, van = null, utr = null) => {
     supabase.from('icici_request_logs')
-      .update({ response_body: response ?? null, error: error ?? null })
+      .update({ response_body: response ?? null, error: error ?? null, ...(van && { van }), ...(utr && { utr }) })
       .eq('id', logId)
       .then();
   };
@@ -242,6 +246,11 @@ const misPosting = async (req, res) => {
     }
 
     const amountNum = parseFloat(Amount);
+    if (isNaN(amountNum)) {
+      const resp = { Response: 'Invalid amount', Code: '99' };
+      finishLog(resp, `Invalid amount value: ${Amount}`);
+      return sendResponse(res, resp);
+    }
 
     // Duplicate UTR check — the UNIQUE constraint on utr prevents double-processing
     const { data: existingTxn } = await supabase
@@ -304,18 +313,44 @@ const misPosting = async (req, res) => {
       return sendResponse(res, resp);
     }
 
-    // Mark virtual account as paid
+    // Mark virtual account as paid/paid_partial — only confirm booking if amount matches
+    let amountMismatchNote = null;
     const vaId = txn?.virtual_account_id;
     if (vaId) {
+      const { data: vaLookup } = await supabase
+        .from('virtual_accounts')
+        .select('expected_amount, booking_id, payment_order_id, generic_payment_link_id')
+        .eq('id', vaId)
+        .single();
+
+      const amountMatches = vaLookup?.expected_amount === null || vaLookup?.expected_amount === undefined ||
+        Math.abs(amountNum - vaLookup.expected_amount) <= 1;
+
+      const newStatus = amountMatches ? 'paid' : 'paid_partial';
+
       const { data: va } = await supabase
         .from('virtual_accounts')
-        .update({ status: 'paid', updated_at: now })
+        .update({ status: newStatus, updated_at: now })
         .eq('id', vaId)
-        .select('booking_id, payment_order_id, generic_payment_link_id')
+        .select('booking_id, payment_order_id, generic_payment_link_id, expected_amount')
         .single();
 
       if (va) {
-        await confirmDownstreamRecords(va, now);
+        if (amountMatches) {
+          await confirmDownstreamRecords(va, now);
+        } else {
+          amountMismatchNote = `Amount mismatch: expected ${va.expected_amount}, received ${amountNum} — VAN marked paid_partial, manual review needed`;
+          logger.warn(`[ICICI MIS POSTING] ${amountMismatchNote} VAN=${VirtualAccountNumber}`);
+          finishLog({ Response: 'Success', Code: '11' }, amountMismatchNote, VirtualAccountNumber, UTR);
+        }
+      }
+
+      // Store expected amount alongside received amount for easy comparison
+      if (vaLookup?.expected_amount) {
+        await supabase
+          .from('icici_ecollection_transactions')
+          .update({ expected_amount_at_credit: vaLookup.expected_amount })
+          .eq('id', txn.id);
       }
     }
 
@@ -330,7 +365,7 @@ const misPosting = async (req, res) => {
     );
 
     const resp = { Response: 'Success', Code: '11' };
-    finishLog(resp);
+    finishLog(resp, amountMismatchNote || null, VirtualAccountNumber, UTR);
     return sendResponse(res, resp);
   } catch (err) {
     logger.error('[ICICI MIS POSTING] Unhandled error:', err);
