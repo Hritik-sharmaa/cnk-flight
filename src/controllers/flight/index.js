@@ -1,0 +1,16 @@
+module.exports = {
+  search: require('./search'),
+  review: require('./review'),
+  fareRule: require('./fareRule'),
+  seatMap: require('./seatMap'),
+  book: require('./book'),
+  fareValidate: require('./fareValidate'),
+  confirmFare: require('./confirmFare'),
+  confirmBook: require('./confirmBook'),
+  bookingDetails: require('./bookingDetails'),
+  unhold: require('./unhold'),
+  amendmentCharges: require('./amendmentCharges'),
+  submitAmendment: require('./submitAmendment'),
+  amendmentDetails: require('./amendmentDetails'),
+  userBalance: require('./userBalance'),
+};
