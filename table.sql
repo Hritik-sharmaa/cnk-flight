@@ -497,9 +497,15 @@ CREATE INDEX IF NOT EXISTS idx_icici_request_logs_van ON public.icici_request_lo
 CREATE INDEX IF NOT EXISTS idx_icici_request_logs_utr ON public.icici_request_logs (utr);
 
 ALTER TABLE public.icici_ecollection_transactions
-  ADD COLUMN IF NOT EXISTS userid                   TEXT,
-  ADD COLUMN IF NOT EXISTS msg_hold_reject_reason   TEXT,
-  ADD COLUMN IF NOT EXISTS expected_amount_at_credit NUMERIC(12, 2);
+  ADD COLUMN IF NOT EXISTS userid                    TEXT,
+  ADD COLUMN IF NOT EXISTS msg_hold_reject_reason    TEXT,
+  ADD COLUMN IF NOT EXISTS expected_amount_at_credit NUMERIC(12, 2),
+  ADD COLUMN IF NOT EXISTS manual_review             BOOLEAN DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS manual_review_reason      TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_icici_txn_manual_review
+  ON public.icici_ecollection_transactions (manual_review)
+  WHERE manual_review = TRUE;
 
 -- Update virtual_accounts status CHECK to include paid_partial
 ALTER TABLE public.virtual_accounts

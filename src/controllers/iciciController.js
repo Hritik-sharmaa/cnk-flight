@@ -319,32 +319,21 @@ const misPosting = async (req, res) => {
       return sendResponse(res, resp, reqId, svcName);
     }
 
-    // Flag for manual review if MIS POSTING arrived without any prior MSG HOLD (Deemed Accept)
+    // Collect all flags and data needed — no DB calls yet
     const isDeemedAccept = !existingTxn;
+    const vaId = txn?.virtual_account_id;
+    let amountMismatchNote = null;
+    const txnUpdate = { mis_acknowledged_at: now };
+
     if (isDeemedAccept) {
-      await supabase
-        .from('icici_ecollection_transactions')
-        .update({
-          manual_review: true,
-          manual_review_reason: `Deemed Accept — MIS POSTING received with no prior MSG HOLD for UTR ${UTR}`,
-        })
-        .eq('id', txn.id);
+      txnUpdate.manual_review = true;
+      txnUpdate.manual_review_reason = `Deemed Accept — MIS POSTING received with no prior MSG HOLD for UTR ${UTR}`;
       logger.warn(`[ICICI MIS POSTING] Deemed Accept — no prior MSG HOLD VAN=${VirtualAccountNumber} UTR=${UTR}`);
     }
 
-    // Mark virtual account as paid/paid_partial — only confirm booking if amount matches
-    let amountMismatchNote = null;
-    const vaId = txn?.virtual_account_id;
-
-    // Flag if no VAN found in DB — money credited but unlinked
     if (!vaId) {
-      await supabase
-        .from('icici_ecollection_transactions')
-        .update({
-          manual_review: true,
-          manual_review_reason: `No VAN found in DB for ${VirtualAccountNumber} — payment unlinked, manual reconciliation needed`,
-        })
-        .eq('id', txn.id);
+      txnUpdate.manual_review = true;
+      txnUpdate.manual_review_reason = `No VAN found in DB for ${VirtualAccountNumber} — payment unlinked, manual reconciliation needed`;
       logger.warn(`[ICICI MIS POSTING] No VAN found in DB VAN=${VirtualAccountNumber} UTR=${UTR} Amount=${amountNum}`);
     }
 
@@ -358,10 +347,10 @@ const misPosting = async (req, res) => {
       const amountMatches = vaLookup?.expected_amount === null || vaLookup?.expected_amount === undefined ||
         Math.abs(amountNum - vaLookup.expected_amount) <= 1;
 
-      // Never downgrade a VAN that is already fully paid
       const alreadyPaid = vaLookup?.status === 'paid';
       const newStatus = amountMatches ? 'paid' : 'paid_partial';
 
+      // VAN status update — critical, must happen before response
       const { data: va } = await supabase
         .from('virtual_accounts')
         .update({ status: alreadyPaid ? 'paid' : newStatus, updated_at: now })
@@ -369,53 +358,39 @@ const misPosting = async (req, res) => {
         .select('booking_id, payment_order_id, generic_payment_link_id, expected_amount')
         .single();
 
-      if (va) {
-        if (amountMatches && !alreadyPaid) {
-          await confirmDownstreamRecords(va, now);
-        } else if (!amountMatches) {
-          amountMismatchNote = `Amount mismatch: expected ${va.expected_amount}, received ${amountNum} — VAN marked paid_partial, manual review needed`;
-          logger.warn(`[ICICI MIS POSTING] ${amountMismatchNote} VAN=${VirtualAccountNumber}`);
-          finishLog({ Response: 'Success', Code: '11' }, amountMismatchNote, VirtualAccountNumber, UTR);
-        } else if (alreadyPaid) {
-          logger.warn(`[ICICI MIS POSTING] Second payment on already-paid VAN=${VirtualAccountNumber} UTR=${UTR} Amount=${amountNum}`);
-        }
+      if (va && amountMatches && !alreadyPaid) {
+        confirmDownstreamRecords(va, now).catch((e) =>
+          logger.error('[ICICI MIS POSTING] confirmDownstreamRecords error:', e.message)
+        );
       }
 
-      // Store expected amount and flag for manual review where needed
-      const reviewFlags = {};
+      if (vaLookup?.expected_amount) txnUpdate.expected_amount_at_credit = vaLookup.expected_amount;
+
       if (alreadyPaid && !amountMatches) {
-        reviewFlags.manual_review = true;
-        reviewFlags.manual_review_reason = `Second payment on already-paid VAN with amount mismatch — expected ${vaLookup.expected_amount}, received ${amountNum}, VAN was already settled`;
+        txnUpdate.manual_review = true;
+        txnUpdate.manual_review_reason = `Second payment on already-paid VAN with amount mismatch — expected ${vaLookup.expected_amount}, received ${amountNum}, VAN was already settled`;
       } else if (!amountMatches) {
-        reviewFlags.manual_review = true;
-        reviewFlags.manual_review_reason = `Amount mismatch: expected ${vaLookup.expected_amount}, received ${amountNum}`;
+        txnUpdate.manual_review = true;
+        txnUpdate.manual_review_reason = `Amount mismatch: expected ${vaLookup.expected_amount}, received ${amountNum}`;
+        amountMismatchNote = `Amount mismatch: expected ${vaLookup.expected_amount}, received ${amountNum} — VAN marked paid_partial, manual review needed`;
+        logger.warn(`[ICICI MIS POSTING] ${amountMismatchNote} VAN=${VirtualAccountNumber}`);
       } else if (alreadyPaid) {
-        reviewFlags.manual_review = true;
-        reviewFlags.manual_review_reason = `Second payment on already-paid VAN — received ${amountNum}, VAN was already settled`;
+        txnUpdate.manual_review = true;
+        txnUpdate.manual_review_reason = `Second payment on already-paid VAN — received ${amountNum}, VAN was already settled`;
+        logger.warn(`[ICICI MIS POSTING] Second payment on already-paid VAN=${VirtualAccountNumber} UTR=${UTR} Amount=${amountNum}`);
       }
-
-      await supabase
-        .from('icici_ecollection_transactions')
-        .update({
-          ...(vaLookup?.expected_amount && { expected_amount_at_credit: vaLookup.expected_amount }),
-          ...reviewFlags,
-        })
-        .eq('id', txn.id);
     }
 
-    // Acknowledge MIS receipt
-    await supabase
-      .from('icici_ecollection_transactions')
-      .update({ mis_acknowledged_at: now })
-      .eq('id', txn.id);
-
-    logger.info(
-      `[ICICI MIS POSTING] Credited VAN=${VirtualAccountNumber} UTR=${UTR} Amount=${Amount} Mode=${Mode}`
-    );
-
+    // Send response immediately — all remaining DB writes are fire-and-forget
+    logger.info(`[ICICI MIS POSTING] Credited VAN=${VirtualAccountNumber} UTR=${UTR} Amount=${Amount} Mode=${Mode}`);
     const resp = { Response: 'Success', Code: '11' };
     finishLog(resp, amountMismatchNote || null, VirtualAccountNumber, UTR);
-    return sendResponse(res, resp, reqId, svcName);
+    const response = sendResponse(res, resp, reqId, svcName);
+
+    // Fire-and-forget — non-critical updates after response
+    supabase.from('icici_ecollection_transactions').update(txnUpdate).eq('id', txn.id).then();
+
+    return response;
   } catch (err) {
     logger.error('[ICICI MIS POSTING] Unhandled error:', err);
     const resp = { Response: 'Internal server error', Code: '99' };
