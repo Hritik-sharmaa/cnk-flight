@@ -319,9 +319,35 @@ const misPosting = async (req, res) => {
       return sendResponse(res, resp, reqId, svcName);
     }
 
+    // Flag for manual review if MIS POSTING arrived without any prior MSG HOLD (Deemed Accept)
+    const isDeemedAccept = !existingTxn;
+    if (isDeemedAccept) {
+      await supabase
+        .from('icici_ecollection_transactions')
+        .update({
+          manual_review: true,
+          manual_review_reason: `Deemed Accept — MIS POSTING received with no prior MSG HOLD for UTR ${UTR}`,
+        })
+        .eq('id', txn.id);
+      logger.warn(`[ICICI MIS POSTING] Deemed Accept — no prior MSG HOLD VAN=${VirtualAccountNumber} UTR=${UTR}`);
+    }
+
     // Mark virtual account as paid/paid_partial — only confirm booking if amount matches
     let amountMismatchNote = null;
     const vaId = txn?.virtual_account_id;
+
+    // Flag if no VAN found in DB — money credited but unlinked
+    if (!vaId) {
+      await supabase
+        .from('icici_ecollection_transactions')
+        .update({
+          manual_review: true,
+          manual_review_reason: `No VAN found in DB for ${VirtualAccountNumber} — payment unlinked, manual reconciliation needed`,
+        })
+        .eq('id', txn.id);
+      logger.warn(`[ICICI MIS POSTING] No VAN found in DB VAN=${VirtualAccountNumber} UTR=${UTR} Amount=${amountNum}`);
+    }
+
     if (vaId) {
       const { data: vaLookup } = await supabase
         .from('virtual_accounts')
@@ -344,22 +370,37 @@ const misPosting = async (req, res) => {
         .single();
 
       if (va) {
-        if (amountMatches) {
+        if (amountMatches && !alreadyPaid) {
           await confirmDownstreamRecords(va, now);
-        } else {
+        } else if (!amountMatches) {
           amountMismatchNote = `Amount mismatch: expected ${va.expected_amount}, received ${amountNum} — VAN marked paid_partial, manual review needed`;
           logger.warn(`[ICICI MIS POSTING] ${amountMismatchNote} VAN=${VirtualAccountNumber}`);
           finishLog({ Response: 'Success', Code: '11' }, amountMismatchNote, VirtualAccountNumber, UTR);
+        } else if (alreadyPaid) {
+          logger.warn(`[ICICI MIS POSTING] Second payment on already-paid VAN=${VirtualAccountNumber} UTR=${UTR} Amount=${amountNum}`);
         }
       }
 
-      // Store expected amount alongside received amount for easy comparison
-      if (vaLookup?.expected_amount) {
-        await supabase
-          .from('icici_ecollection_transactions')
-          .update({ expected_amount_at_credit: vaLookup.expected_amount })
-          .eq('id', txn.id);
+      // Store expected amount and flag for manual review where needed
+      const reviewFlags = {};
+      if (alreadyPaid && !amountMatches) {
+        reviewFlags.manual_review = true;
+        reviewFlags.manual_review_reason = `Second payment on already-paid VAN with amount mismatch — expected ${vaLookup.expected_amount}, received ${amountNum}, VAN was already settled`;
+      } else if (!amountMatches) {
+        reviewFlags.manual_review = true;
+        reviewFlags.manual_review_reason = `Amount mismatch: expected ${vaLookup.expected_amount}, received ${amountNum}`;
+      } else if (alreadyPaid) {
+        reviewFlags.manual_review = true;
+        reviewFlags.manual_review_reason = `Second payment on already-paid VAN — received ${amountNum}, VAN was already settled`;
       }
+
+      await supabase
+        .from('icici_ecollection_transactions')
+        .update({
+          ...(vaLookup?.expected_amount && { expected_amount_at_credit: vaLookup.expected_amount }),
+          ...reviewFlags,
+        })
+        .eq('id', txn.id);
     }
 
     // Acknowledge MIS receipt
