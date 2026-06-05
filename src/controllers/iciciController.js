@@ -52,6 +52,9 @@ const msgHold = async (req, res) => {
   };
 
   try {
+    const reqId = req.body?.requestId || '';
+    const svcName = req.body?.service || '';
+
     // Optional IP whitelist — ICICI_WHITELISTED_IPS is a comma-separated list
     const allowedIps = process.env.ICICI_WHITELISTED_IPS;
     if (allowedIps) {
@@ -59,7 +62,7 @@ const msgHold = async (req, res) => {
         logger.warn(`[ICICI MSG HOLD] Rejected request from unexpected IP: ${ip}`);
         const resp = { AcceptOrReject: 'N', Message: 'Unauthorized source', Code: '12' };
         finishLog(resp, `IP not whitelisted: ${ip}`);
-        return sendResponse(res, resp);
+        return sendResponse(res, resp, reqId, svcName);
       }
     }
 
@@ -70,7 +73,7 @@ const msgHold = async (req, res) => {
       logger.error('[ICICI MSG HOLD] Decryption failed:', cryptoErr);
       const resp = { AcceptOrReject: 'N', Message: 'Decryption failed', Code: '12' };
       finishLog(resp, `Decryption failed: ${cryptoErr.message}`);
-      return sendResponse(res, resp);
+      return sendResponse(res, resp, reqId, svcName);
     }
 
     const {
@@ -79,21 +82,18 @@ const msgHold = async (req, res) => {
       PayerPaymentDate, BankInternalTransactionNumber,
     } = payload;
 
-    const reqId = req.body?.requestId || '';
-    const svcName = req.body?.service || '';
-
     if (!VirtualAccountNumber || !UTR || !Amount || !Mode) {
       logger.error('[ICICI MSG HOLD] Missing required fields in decrypted payload');
       const resp = { AcceptOrReject: 'N', Message: 'Missing required fields', Code: '12' };
       finishLog(resp, `Missing required fields. Present keys: ${Object.keys(payload).join(', ')}`);
-      return sendResponse(res, resp);
+      return sendResponse(res, resp, reqId, svcName);
     }
 
     const amountNum = parseFloat(Amount);
     if (isNaN(amountNum)) {
       const resp = { AcceptOrReject: 'N', Message: 'Invalid amount', Code: '12' };
       finishLog(resp, `Invalid amount value: ${Amount}`);
-      return sendResponse(res, resp);
+      return sendResponse(res, resp, reqId, svcName);
     }
 
     // Look up the virtual account
@@ -107,7 +107,7 @@ const msgHold = async (req, res) => {
       logger.error('[ICICI MSG HOLD] DB error looking up VAN:', vaErr);
       const resp = { AcceptOrReject: 'N', Message: 'Internal error', Code: '12' };
       finishLog(resp, `DB error on VAN lookup: ${vaErr.message}`);
-      return sendResponse(res, resp);
+      return sendResponse(res, resp, reqId, svcName);
     }
 
     // Determine accept/reject
@@ -180,7 +180,7 @@ const msgHold = async (req, res) => {
     logger.error('[ICICI MSG HOLD] Unhandled error:', err);
     const resp = { AcceptOrReject: 'N', Message: 'Internal server error', Code: '12' };
     finishLog(resp, `Unhandled error: ${err.message}`);
-    return sendResponse(res, resp);
+    return sendResponse(res, resp, req.body?.requestId || '', req.body?.service || '');
   }
 };
 
@@ -215,6 +215,9 @@ const misPosting = async (req, res) => {
   };
 
   try {
+    const reqId = req.body?.requestId || '';
+    const svcName = req.body?.service || '';
+
     // Optional IP whitelist
     const allowedIps = process.env.ICICI_WHITELISTED_IPS;
     if (allowedIps) {
@@ -222,7 +225,7 @@ const misPosting = async (req, res) => {
         logger.warn(`[ICICI MIS POSTING] Rejected request from unexpected IP: ${ip}`);
         const resp = { Response: 'Unauthorized source', Code: '99' };
         finishLog(resp, `IP not whitelisted: ${ip}`);
-        return sendResponse(res, resp);
+        return sendResponse(res, resp, reqId, svcName);
       }
     }
 
@@ -233,7 +236,7 @@ const misPosting = async (req, res) => {
       logger.error('[ICICI MIS POSTING] Decryption failed:', cryptoErr);
       const resp = { Response: 'Decryption failed', Code: '99' };
       finishLog(resp, `Decryption failed: ${cryptoErr.message}`);
-      return sendResponse(res, resp);
+      return sendResponse(res, resp, reqId, svcName);
     }
 
     const {
@@ -241,9 +244,6 @@ const misPosting = async (req, res) => {
       ClientAccountNo, Amount, PayerName, PayerAccNumber, PayerBankIFSC,
       PayerPaymentDate, BankInternalTransactionNumber,
     } = payload;
-
-    const reqId = req.body?.requestId || '';
-    const svcName = req.body?.service || '';
 
     if (!VirtualAccountNumber || !UTR || !Amount || !Mode) {
       const resp = { Response: 'Missing required fields', Code: '99' };
@@ -255,7 +255,7 @@ const misPosting = async (req, res) => {
     if (isNaN(amountNum)) {
       const resp = { Response: 'Invalid amount', Code: '99' };
       finishLog(resp, `Invalid amount value: ${Amount}`);
-      return sendResponse(res, resp);
+      return sendResponse(res, resp, reqId, svcName);
     }
 
     // Duplicate UTR check — the UNIQUE constraint on utr prevents double-processing
@@ -269,7 +269,7 @@ const misPosting = async (req, res) => {
       logger.warn(`[ICICI MIS POSTING] Duplicate UTR received: ${UTR}`);
       const resp = { Response: 'Duplicate UTR', Code: '06' };
       finishLog(resp, `Duplicate UTR: ${UTR}`);
-      return sendResponse(res, resp);
+      return sendResponse(res, resp, reqId, svcName);
     }
 
     // Upsert transaction with MIS data (may be first time if MSG HOLD was Deemed Accept)
@@ -316,7 +316,7 @@ const misPosting = async (req, res) => {
       logger.error('[ICICI MIS POSTING] Transaction upsert error:', upsertErr);
       const resp = { Response: 'Internal error', Code: '99' };
       finishLog(resp, `Transaction upsert failed: ${upsertErr.message}`);
-      return sendResponse(res, resp);
+      return sendResponse(res, resp, reqId, svcName);
     }
 
     // Mark virtual account as paid/paid_partial — only confirm booking if amount matches
@@ -325,18 +325,20 @@ const misPosting = async (req, res) => {
     if (vaId) {
       const { data: vaLookup } = await supabase
         .from('virtual_accounts')
-        .select('expected_amount, booking_id, payment_order_id, generic_payment_link_id')
+        .select('expected_amount, booking_id, payment_order_id, generic_payment_link_id, status')
         .eq('id', vaId)
         .single();
 
       const amountMatches = vaLookup?.expected_amount === null || vaLookup?.expected_amount === undefined ||
         Math.abs(amountNum - vaLookup.expected_amount) <= 1;
 
+      // Never downgrade a VAN that is already fully paid
+      const alreadyPaid = vaLookup?.status === 'paid';
       const newStatus = amountMatches ? 'paid' : 'paid_partial';
 
       const { data: va } = await supabase
         .from('virtual_accounts')
-        .update({ status: newStatus, updated_at: now })
+        .update({ status: alreadyPaid ? 'paid' : newStatus, updated_at: now })
         .eq('id', vaId)
         .select('booking_id, payment_order_id, generic_payment_link_id, expected_amount')
         .single();
@@ -377,7 +379,7 @@ const misPosting = async (req, res) => {
     logger.error('[ICICI MIS POSTING] Unhandled error:', err);
     const resp = { Response: 'Internal server error', Code: '99' };
     finishLog(resp, `Unhandled error: ${err.message}`);
-    return sendResponse(res, resp);
+    return sendResponse(res, resp, req.body?.requestId || '', req.body?.service || '');
   }
 };
 
