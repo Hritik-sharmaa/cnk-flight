@@ -355,7 +355,7 @@ const misPosting = async (req, res) => {
         .from('virtual_accounts')
         .update({ status: alreadyPaid ? 'paid' : newStatus, updated_at: now })
         .eq('id', vaId)
-        .select('booking_id, payment_order_id, generic_payment_link_id, expected_amount')
+        .select('id, booking_id, payment_order_id, generic_payment_link_id, quote_id, expected_amount')
         .single();
 
       if (va && amountMatches && !alreadyPaid) {
@@ -433,6 +433,22 @@ async function confirmDownstreamRecords(va, now) {
   }
 
   await Promise.all(updates);
+
+  // Notify cnkb2b to handle booking creation (quote→booking), installment
+  // reconciliation, and email dispatch. Non-blocking — ICICI response already sent.
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (supabaseUrl && serviceKey && va.id) {
+    fetch(`${supabaseUrl}/functions/v1/confirm-van-payment`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${serviceKey}`,
+        'apikey': serviceKey,
+      },
+      body: JSON.stringify({ virtual_account_id: va.id }),
+    }).catch((err) => logger.error('[confirm-van-payment] call failed:', err));
+  }
 }
 
 module.exports = { msgHold, misPosting };
