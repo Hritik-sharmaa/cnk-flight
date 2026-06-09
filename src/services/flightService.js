@@ -1,5 +1,5 @@
 const { getProvider } = require('../providers/FlightProviderFactory');
-const { mapSearchResult, mapReviewResult, mapBookingDetails, mapFareRule, mapSeatMap } = require('../providers/tripjack/tripjackMapper');
+const { mapSearchResult, mapReviewResult, mapBookResult, mapBookingDetails, mapFareRule, mapSeatMap } = require('../providers/tripjack/tripjackMapper');
 
 const PROVIDER_NAME = () => process.env.FLIGHT_PROVIDER || 'tripjack';
 
@@ -30,7 +30,9 @@ async function seatMap(bookingId) {
 
 async function book(bookingData) {
   const { _meta, ...providerPayload } = bookingData;
-  return getProvider().book(providerPayload);
+  const raw = await getProvider().book(providerPayload);
+  if (PROVIDER_NAME() === 'tripjack') return mapBookResult(raw);
+  return raw;
 }
 
 async function fareValidate(bookingId) {

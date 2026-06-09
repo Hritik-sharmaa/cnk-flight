@@ -114,22 +114,45 @@ function mapSearchResult(raw) {
   return mapped;
 }
 
+function extractTotalFareDetail(raw) {
+  // Tripjack uses lowercase 'fc' inside totalFareDetail but uppercase 'fC' inside individual
+  // passenger fares (fd.ADULT.fC.TF). Try both to guard against any casing inconsistency.
+  return raw.totalPriceInfo?.totalFareDetail?.fC ?? raw.totalPriceInfo?.totalFareDetail?.fc ?? null;
+}
+
 function mapReviewResult(raw) {
   if (!raw.bookingId) return raw;
 
-  // Tripjack uses lowercase 'fc' inside totalFareDetail but uppercase 'fC' inside individual
-  // passenger fares (fd.ADULT.fC.TF). Try both to guard against any casing inconsistency.
-  const totalFare =
-    raw.totalPriceInfo?.totalFareDetail?.fC?.TF ??
-    raw.totalPriceInfo?.totalFareDetail?.fc?.TF ??
-    null;
+  const fc = extractTotalFareDetail(raw);
+  const totalFare = fc?.TF ?? null;
+  const baseFare = fc?.BF ?? null;
+  const tax = fc?.TAF ?? (totalFare !== null && baseFare !== null ? totalFare - baseFare : null);
 
   return {
     bookingId: raw.bookingId,
     sessionValidSeconds: raw.conditions?.st,
     conditions: raw.conditions,
     totalFare,
+    baseFare,
+    tax,
     tripInfos: raw.tripInfos,
+    raw,
+  };
+}
+
+function mapBookResult(raw) {
+  if (!raw.bookingId) return { raw };
+
+  const fc = extractTotalFareDetail(raw);
+  const totalFare = fc?.TF ?? (raw.totalFare ?? null);
+  const baseFare = fc?.BF ?? null;
+  const tax = fc?.TAF ?? (totalFare !== null && baseFare !== null ? totalFare - baseFare : null);
+
+  return {
+    bookingId: raw.bookingId,
+    totalFare,
+    baseFare,
+    tax,
     raw,
   };
 }
@@ -277,4 +300,4 @@ function mapBookingDetails(raw) {
   };
 }
 
-module.exports = { mapSearchResult, mapReviewResult, mapBookingDetails, mapFareRule, mapSeatMap, mapSegment, mapFareOption };
+module.exports = { mapSearchResult, mapReviewResult, mapBookResult, mapBookingDetails, mapFareRule, mapSeatMap, mapSegment, mapFareOption };
