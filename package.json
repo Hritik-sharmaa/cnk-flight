@@ -4,8 +4,8 @@
   "description": "Cox & Kings flight microservice — provider-agnostic flight search, review, and booking API",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node --security-revert=CVE-2023-46809 server.js",
+    "dev": "nodemon --exec 'node --security-revert=CVE-2023-46809 server.js'"
   },
   "dependencies": {
     "axios": "^1.6.0",

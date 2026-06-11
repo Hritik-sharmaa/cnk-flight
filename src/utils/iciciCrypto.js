@@ -55,8 +55,16 @@ async function decryptIciciPayload(body) {
  * @returns {{ encryptedKey: string, iv: string, encryptedData: string }}
  */
 function encryptIciciResponse(payload, requestId = '', service = '') {
-  const iciciCert = process.env.ICICI_PUBLIC_CERT;
-  if (!iciciCert) throw new Error('ICICI_PUBLIC_CERT env var is not set');
+  // ICICI_TEST_SELF_ENCRYPT=true → use our own public key so local tests can decrypt responses
+  let iciciCert;
+  if (process.env.ICICI_TEST_SELF_ENCRYPT === 'true') {
+    const privateKeyPem = process.env.ICICI_PRIVATE_KEY;
+    if (!privateKeyPem) throw new Error('ICICI_PRIVATE_KEY env var is not set');
+    iciciCert = crypto.createPublicKey(privateKeyPem).export({ type: 'pkcs1', format: 'pem' });
+  } else {
+    iciciCert = process.env.ICICI_PUBLIC_CERT;
+    if (!iciciCert) throw new Error('ICICI_PUBLIC_CERT env var is not set');
+  }
 
   const sessionKey = crypto.randomBytes(16);
   const iv = crypto.randomBytes(16);
