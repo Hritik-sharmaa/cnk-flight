@@ -112,7 +112,7 @@ async function liveSearchHotelsService(body) {
     ...(hids?.length ? { hids } : {}),
   };
 
-  logger.info(`[hotelService] liveSearch: sending payload to TripJack`, { payload });
+  logger.info('[hotelService] liveSearch: sending payload to TripJack', { payload });
 
   const data = await post(ENDPOINTS.LISTING, payload);
 
