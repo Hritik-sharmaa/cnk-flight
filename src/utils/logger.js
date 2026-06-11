@@ -2,7 +2,7 @@ const { createLogger, format, transports } = require('winston');
 
 const { combine, timestamp, printf, colorize, errors, json } = format;
 
-const SERVICE_NAME = 'cnk-hotel';
+const SERVICE_NAME = 'cnk-flight';
 
 const consoleFormat = combine(
   colorize({ all: true }),
