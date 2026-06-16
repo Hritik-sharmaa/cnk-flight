@@ -439,7 +439,9 @@ async function confirmDownstreamRecords(va, now) {
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (supabaseUrl && serviceKey && va.id) {
-    fetch(`${supabaseUrl}/functions/v1/confirm-van-payment`, {
+    const edgeFnUrl = process.env.CONFIRM_VAN_PAYMENT_URL || `${supabaseUrl}/functions/v1/confirm-van-payment`;
+    logger.info(`[confirm-van-payment] calling: ${edgeFnUrl} for va.id=${va.id}`);
+    fetch(edgeFnUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
