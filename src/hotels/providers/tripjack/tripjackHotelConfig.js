@@ -24,23 +24,26 @@ const BASE_URLS = {
 };
 
 const ENDPOINTS = {
-  // Static content sync
-  CITY_LIST:       '/hms/v3/content/fetch-city-regionIds', // GET  — HMS
-  HOTEL_LIST:      '/hms/v3/fetch-static-hotels',          // POST — Static
+  // Static content sync (HMS service)
+  CITY_LIST:           '/hms/v3/content/fetch-city-regionIds',    // GET  — HMS
+  HOTEL_MAPPING_SYNC:  '/hms/v3/content/fetch-hotel-mapping-sync', // POST — HMS (returns tjHotelId list, nextCursor-paginated)
+  HOTEL_CONTENT:       '/hms/v3/content/fetch-hotel-content',      // POST — HMS (full content, max 100 IDs/req)
 
   // Booking flow (Steps 1–4)
-  LISTING:         '/hms/v3/hotel/listing',                // POST — HMS  (Step 1: Search)
-  DETAIL:          '/hms/v3/hotel/pricing',                // POST — HMS  (Step 2: Dynamic Detail/Pricing)
-  REVIEW:          '/hms/v3/hotel/review',                 // POST — HMS  (Step 3: Review)
-  BOOK:            '/oms/v3/hotel/book',                   // POST — Booker (Step 4: Book)
+  LISTING:             '/hms/v3/hotel/listing',                   // POST — HMS  (Step 1: Search)
+  DETAIL:              '/hms/v3/hotel/pricing',                   // POST — HMS  (Step 2: Dynamic Detail/Pricing)
+  REVIEW:              '/hms/v3/hotel/review',                    // POST — HMS  (Step 3: Review)
+  BOOK:                '/oms/v3/hotel/book',                      // POST — Booker (Step 4: Book)
 
   // Booking management
-  BOOKING_DETAILS: '/oms/v3/hotel/booking-details',        // POST — Booker
-  CANCEL_BOOKING:  '/oms/v3/hotel/cancel-booking',         // POST — Booker (append /{bookingId})
+  BOOKING_DETAILS:     '/oms/v3/hotel/booking-details',           // POST — Booker
+  CANCEL_BOOKING:      '/oms/v3/hotel/cancel-booking',            // POST — Booker (append /{bookingId})
 };
 
 const PAGINATION = {
-  CITY_LIMIT: 2000,  // max records per city page (cursor-based)
+  CITY_LIMIT:         2000,  // max records per city page
+  HOTEL_MAPPING_SIZE: 2000,  // IDs returned per fetch-hotel-mapping-sync page
+  HOTEL_CONTENT_SIZE: 100,   // max IDs per fetch-hotel-content request
 };
 
 module.exports = { BASE_URLS, ENDPOINTS, PAGINATION };

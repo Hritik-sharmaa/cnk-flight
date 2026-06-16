@@ -6,12 +6,6 @@ function slugify(name) {
     .replace(/^-|-$/g, '');
 }
 
-function parseDescription(raw) {
-  if (!raw) return null;
-  if (typeof raw === 'object') return raw;
-  try { return JSON.parse(raw); } catch { return { text: raw }; }
-}
-
 function mapCity(raw) {
   const parts = (raw.fullRegionName ?? '').split(', ');
   const stateName = parts.length >= 3 ? parts[parts.length - 2] : null;
@@ -32,49 +26,76 @@ function mapCity(raw) {
   };
 }
 
+/**
+ * Maps a hotel object from fetch-hotel-content (V3 Static Content API).
+ *
+ * Response structure:
+ *   tjHotelId, unicaId, name, is_active, star_rating,
+ *   property_type: { id, name },
+ *   locale: { address: { fulladdr, city, statename, countryname, countrycode, postal_code },
+ *             coordinates: { lat, long }, phone: [] },
+ *   amenities: { "0": { id, name }, "1": ... },  ← object with numeric keys
+ *   images: [{ is_hero_image, links: { XXL: { href } } }],
+ *   descriptions: { default, amenities, dining, location, ... }
+ */
 function mapHotel(raw) {
-  const addr = raw.address ?? {};
-  const images = Array.isArray(raw.images) ? raw.images : [];
-  const facilities = Array.isArray(raw.facilities) ? raw.facilities : [];
+  const locale   = raw.locale ?? {};
+  const addr     = locale.address ?? {};
+  const coords   = locale.coordinates ?? {};
+  const phones   = Array.isArray(locale.phone) ? locale.phone : [];
+
+  // amenities is an object with numeric keys, not an array
+  const amenitiesObj = raw.amenities ?? {};
+  const facilities = Object.values(amenitiesObj).map((f) => ({
+    facilityCode: String(f.id ?? ''),
+    facilityType: null,
+    facilityName: f.name ?? '',
+  }));
+
+  // images: each entry has links.{SIZE}.href
+  const images = (raw.images ?? [])
+    .map((img, i) => {
+      const links = img.links ?? {};
+      // prefer XXL, fall back to first available size
+      const sizeKey = links.XXL ? 'XXL' : Object.keys(links)[0];
+      const href = sizeKey ? links[sizeKey]?.href : null;
+      if (!href) return null;
+      return {
+        imageUrl:    href,
+        imageSize:   sizeKey ?? null,
+        isHeroImage: img.is_hero_image === true,
+        sortOrder:   i,
+      };
+    })
+    .filter(Boolean);
 
   return {
     hotel: {
-      supplier: 'tripjack',
+      supplier:        'tripjack',
       supplierHotelId: String(raw.tjHotelId ?? ''),
-      unicaId: raw.unicaId ? String(raw.unicaId) : null,
-      supplierCityCode: addr.city?.code ? String(addr.city.code) : null, // used to resolve region_id FK
-      name: raw.name ?? '',
-      slug: slugify(raw.name),
-      propertyType: raw.propertyType ?? null,
-      description: parseDescription(raw.description),
-      rating: raw.rating != null ? parseFloat(raw.rating) : null,
-      isDeleted: raw.isDeleted === true,
-      addressLine: addr.adr ?? null,
-      postalCode: addr.postalCode ?? null,
-      cityName: addr.city?.name ?? raw.cityName ?? null,
-      stateName: addr.state?.name ?? null,
-      countryName: addr.country?.name ?? raw.countryName ?? null,
-      countryCode: addr.country?.code ?? null,
-      latitude: raw.geolocation?.lt != null ? parseFloat(raw.geolocation.lt) : null,
-      longitude: raw.geolocation?.ln != null ? parseFloat(raw.geolocation.ln) : null,
-      contactPhone: raw.contact?.ph ?? null,
-      contactEmail: raw.contact?.em ?? null,
-      contactFax: raw.contact?.fax ?? null,
-      website: raw.contact?.wb ?? null,
-      rawData: raw,
+      unicaId:         raw.unicaId ? String(raw.unicaId) : null,
+      name:            raw.name ?? '',
+      slug:            slugify(raw.name),
+      propertyType:    raw.property_type?.name ?? raw.property_type?.id ?? null,
+      description:     raw.descriptions ?? null,
+      rating:          raw.star_rating != null ? parseFloat(raw.star_rating) : null,
+      isDeleted:       raw.is_active === false,
+      addressLine:     addr.fulladdr ?? addr.line_1 ?? null,
+      postalCode:      addr.postal_code ?? null,
+      cityName:        addr.city ?? null,
+      stateName:       addr.statename ?? null,
+      countryName:     addr.countryname ?? null,
+      countryCode:     addr.countrycode ?? null,
+      latitude:        coords.lat  != null ? parseFloat(coords.lat)  : null,
+      longitude:       coords.long != null ? parseFloat(coords.long) : null,
+      contactPhone:    phones[0] ?? null,
+      contactEmail:    null,
+      contactFax:      null,
+      website:         null,
+      rawData:         raw,
     },
-    images: images
-      .filter((img) => img.url)
-      .map((img, i) => ({
-        imageUrl: img.url,
-        imageSize: img.sz ?? null,
-        sortOrder: i,
-      })),
-    facilities: facilities.map((f) => ({
-      facilityCode: String(f.id ?? f.code ?? ''),
-      facilityType: f.type ?? null,
-      facilityName: f.name ?? '',
-    })),
+    images,
+    facilities,
   };
 }
 

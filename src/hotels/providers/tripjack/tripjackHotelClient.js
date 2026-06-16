@@ -11,7 +11,7 @@ const makeClient = (baseURL) =>
       apikey: process.env.HOTEL_API_KEY,
       'Content-Type': 'application/json',
     },
-    timeout: 60000,
+    timeout: 120000, // 2 min — TripJack content batches can be slow
   });
 
 /**
@@ -92,7 +92,7 @@ async function get(path, queryParams = {}, mode, service = 'hms') {
  * @param {'live'|'test'} [mode]
  * @param {'hms'|'static'} [service='hms']
  */
-async function post(path, body = {}, mode, service = 'hms') {
+async function post(path, body = {}, mode, service = 'hms', retries = 1) {
   const resolvedMode = resolveMode(mode);
   const baseUrl = getBaseUrl(resolvedMode, service);
   const traceId = randomUUID();
@@ -104,7 +104,7 @@ async function post(path, body = {}, mode, service = 'hms') {
 
   logger.info(`[tripjackHotelClient] POST ${baseUrl}${path}`, { body, mode: resolvedMode });
 
-  try {
+  const attempt = async () => {
     const res = await makeClient(baseUrl).post(path, body);
     responseStatus = res.status;
     responseData = res.data;
@@ -112,7 +112,19 @@ async function post(path, body = {}, mode, service = 'hms') {
     success = true;
     logger.info(`[tripjackHotelClient] POST ${path} → ${responseStatus} (${Date.now() - start}ms)`);
     return responseData;
+  };
+
+  try {
+    return await attempt();
   } catch (err) {
+    const isRetryable = err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || err.message?.includes('timeout');
+
+    if (retries > 0 && isRetryable) {
+      logger.warn(`[tripjackHotelClient] POST ${path} timed out — retrying (${retries} left)`);
+      await new Promise((r) => setTimeout(r, 3000)); // 3s back-off before retry
+      return post(path, body, mode, service, retries - 1);
+    }
+
     responseStatus = responseStatus ?? err.response?.status ?? null;
     errorMessage = err.message;
     logger.error(`[tripjackHotelClient] POST ${path} failed → ${responseStatus}`, {

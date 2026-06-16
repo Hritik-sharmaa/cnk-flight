@@ -1,0 +1,157 @@
+name: Hotel Sync
+
+# Schedule summary (all times UTC = IST-5:30):
+#   02:00 UTC daily  → incremental sync: new + deleted hotels since yesterday
+#   00:00 UTC Sunday → full sync: rebuild entire city + hotel catalogue (every 7 days)
+#
+# TripJack V3 Static Content API (confirmed by TripJack support):
+#   fetch-hotel-mapping-sync  → paginate hotel IDs (type: NEW, 2000/page, nextCursor)
+#   fetch-hotel-content       → full hotel details (max 100 IDs/request)
+#   Recommended sync schedule: full catalogue every 7 days, incremental daily
+
+on:
+  schedule:
+    - cron: '0 2 * * *'    # Daily 02:00 UTC (07:30 IST) — incremental new + deleted
+    - cron: '0 0 * * 0'    # Weekly Sunday 00:00 UTC (05:30 IST) — full rebuild
+
+  workflow_dispatch:
+    inputs:
+      sync_type:
+        description: 'Which sync to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all          # cities + full hotel sync
+          - cities
+          - hotels-full  # all hotels from 2020 onwards (weekly rebuild)
+          - hotels-incremental  # only hotels added/changed since yesterday
+          - deleted
+
+env:
+  BASE_URL: ${{ secrets.HOTEL_SYNC_SERVER_URL }}
+  API_KEY: ${{ secrets.INTERNAL_API_KEY }}
+
+jobs:
+  # ── Job 1: Full sync — runs weekly Sunday or manual 'all'/'hotels-full'/'cities' ──
+  full-sync:
+    name: Full Hotel Sync (Weekly)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 0 * * 0') ||
+      (github.event_name == 'workflow_dispatch' && (
+        inputs.sync_type == 'all' ||
+        inputs.sync_type == 'cities' ||
+        inputs.sync_type == 'hotels-full'
+      ))
+
+    steps:
+      - name: Sync Cities
+        if: >
+          github.event_name == 'schedule' ||
+          inputs.sync_type == 'all' ||
+          inputs.sync_type == 'cities'
+        run: |
+          echo "Starting city sync..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            --max-time 300 \
+            -X POST "$BASE_URL/api/v1/hotels/sync/cities" \
+            -H "x-api-key: $API_KEY" \
+            -H "Content-Type: application/json")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+          echo "HTTP $HTTP_CODE"
+
+          [ "$HTTP_CODE" = "200" ] || { echo "City sync failed"; exit 1; }
+
+      - name: Sync Hotels (full catalogue — all hotels since 2020)
+        if: >
+          github.event_name == 'schedule' ||
+          inputs.sync_type == 'all' ||
+          inputs.sync_type == 'hotels-full'
+        run: |
+          echo "Starting full hotel sync (type=NEW, from 2020-01-01)..."
+          echo "Uses: fetch-hotel-mapping-sync → fetch-hotel-content (5 concurrent batches)"
+          echo "Expected duration: ~25-30 minutes"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            --max-time 2700 \
+            -X POST "$BASE_URL/api/v1/hotels/sync/hotels?type=NEW&lastUpdateTime=2020-01-01T00:00:00Z" \
+            -H "x-api-key: $API_KEY" \
+            -H "Content-Type: application/json")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+          echo "HTTP $HTTP_CODE"
+
+          [ "$HTTP_CODE" = "200" ] || { echo "Hotel sync failed"; exit 1; }
+
+  # ── Job 2: Daily incremental — new hotels + deleted hotels since yesterday ───
+  incremental-sync:
+    name: Incremental Hotel Sync (Daily)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 2 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (
+        inputs.sync_type == 'hotels-incremental' ||
+        inputs.sync_type == 'deleted'
+      ))
+
+    steps:
+      - name: Compute since-timestamp
+        id: ts
+        run: |
+          # Use yesterday 00:00 UTC. Adding a 2-hour buffer by going back 26 hours
+          # so hotels updated near midnight are never missed between runs.
+          SINCE=$(date -u -d '26 hours ago' '+%Y-%m-%dT%H:%M:%SZ')
+          echo "since=$SINCE" >> $GITHUB_OUTPUT
+          echo "Syncing hotels changed/deleted since $SINCE"
+
+      - name: Sync New Hotels (incremental)
+        if: >
+          github.event_name == 'schedule' ||
+          inputs.sync_type == 'hotels-incremental'
+        run: |
+          SINCE="${{ steps.ts.outputs.since }}"
+          echo "Fetching hotels added since $SINCE..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            --max-time 600 \
+            -X POST "$BASE_URL/api/v1/hotels/sync/hotels?type=NEW&lastUpdateTime=${SINCE}" \
+            -H "x-api-key: $API_KEY" \
+            -H "Content-Type: application/json")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+          echo "HTTP $HTTP_CODE"
+
+          [ "$HTTP_CODE" = "200" ] || { echo "Incremental hotel sync failed"; exit 1; }
+
+      - name: Sync Deleted Hotels
+        if: >
+          github.event_name == 'schedule' ||
+          inputs.sync_type == 'hotels-incremental' ||
+          inputs.sync_type == 'deleted'
+        run: |
+          SINCE="${{ steps.ts.outputs.since }}"
+          echo "Fetching hotels deleted since $SINCE..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            --max-time 300 \
+            -X POST "$BASE_URL/api/v1/hotels/sync/hotels-deleted?lastUpdateTime=${SINCE}" \
+            -H "x-api-key: $API_KEY" \
+            -H "Content-Type: application/json")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+          echo "HTTP $HTTP_CODE"
+
+          [ "$HTTP_CODE" = "200" ] || { echo "Deleted hotel sync failed"; exit 1; }

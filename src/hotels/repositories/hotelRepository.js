@@ -189,4 +189,16 @@ async function getHotelById(id) {
   return data;
 }
 
-module.exports = { upsertHotels, searchHotels, getHotelById };
+async function markHotelsDeleted(supplierHotelIds) {
+  if (!supplierHotelIds.length) return 0;
+  const { data, error } = await supabase
+    .from('hotels_inventory')
+    .update({ is_deleted: true, updated_at: new Date().toISOString() })
+    .eq('supplier', 'tripjack')
+    .in('supplier_hotel_id', supplierHotelIds)
+    .select('id');
+  if (error) throw error;
+  return (data ?? []).length;
+}
+
+module.exports = { upsertHotels, markHotelsDeleted, searchHotels, getHotelById };
