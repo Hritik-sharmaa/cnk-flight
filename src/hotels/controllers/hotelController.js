@@ -8,6 +8,7 @@ const {
   hotelDetailService,
   hotelReviewService,
   hotelBookService,
+  confirmBookingService,
   bookingDetailsService,
   cancelBookingService,
 } = require('../services/hotelService');
@@ -93,6 +94,16 @@ const hotelBook = asyncHandler(async (req, res) => {
   return response(res, true, 200, 'Hotel booking initiated successfully', result);
 });
 
+// ─── Confirm Booking (ON_HOLD → confirmed) ───────────────────────────────────
+
+const confirmBooking = asyncHandler(async (req, res) => {
+  logger.info(`Confirm booking request: bookingId=${req.body.bookingId}`);
+
+  const result = await confirmBookingService(req.body);
+
+  return response(res, true, 200, 'Booking confirmation initiated successfully', result);
+});
+
 // ─── Booking Details (poll) ──────────────────────────────────────────────────
 
 const bookingDetails = asyncHandler(async (req, res) => {
@@ -120,6 +131,7 @@ module.exports = {
   hotelDetail,
   hotelReview,
   hotelBook,
+  confirmBooking,
   bookingDetails,
   cancelBooking,
 };

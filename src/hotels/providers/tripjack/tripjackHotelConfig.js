@@ -36,6 +36,7 @@ const ENDPOINTS = {
   BOOK:                '/oms/v3/hotel/book',                      // POST — Booker (Step 4: Book)
 
   // Booking management
+  CONFIRM_BOOKING:     '/oms/v3/hotel/confirm-book',              // POST — Booker (Step 5: Confirm ON_HOLD booking)
   BOOKING_DETAILS:     '/oms/v3/hotel/booking-details',           // POST — Booker
   CANCEL_BOOKING:      '/oms/v3/hotel/cancel-booking',            // POST — Booker (append /{bookingId})
 };

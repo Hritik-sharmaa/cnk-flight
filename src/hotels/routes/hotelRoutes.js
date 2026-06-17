@@ -6,6 +6,7 @@ const {
   validateHotelDetail,
   validateHotelReview,
   validateHotelBook,
+  validateConfirmBooking,
   validateBookingDetails,
   validateCancelBooking,
 } = require('../validators/hotelValidator');
@@ -16,6 +17,7 @@ const {
   hotelDetail,
   hotelReview,
   hotelBook,
+  confirmBooking,
   bookingDetails,
   cancelBooking,
 } = require('../controllers/hotelController');
@@ -46,6 +48,9 @@ router.post('/review', validateHotelReview, hotelReview);
 router.post('/book', validateHotelBook, hotelBook);
 
 // ─── Booking management ───────────────────────────────────────────────────────
+// POST /hotels/booking/confirm — confirm an ON_HOLD booking (attach payment)
+router.post('/booking/confirm', validateConfirmBooking, confirmBooking);
+
 // POST /hotels/booking/details  — poll status after booking
 router.post('/booking/details', validateBookingDetails, bookingDetails);
 

@@ -109,6 +109,18 @@ const hotelBookSchema = Joi.object({
   gstInfo: gstInfoSchema.optional(),
 }).unknown(true);
 
+// ─── Confirm booking (ON_HOLD → confirmed) ───────────────────────────────────
+
+const confirmBookingSchema = Joi.object({
+  bookingId: Joi.string().required(),
+  paymentInfos: Joi.array().items(
+    Joi.object({
+      amount: Joi.number().required(),
+      type: Joi.string().valid('HOTEL').default('HOTEL'),
+    }).unknown(true)
+  ).min(1).required(),
+}).unknown(true);
+
 // ─── Booking details (poll) ──────────────────────────────────────────────────
 
 const bookingDetailsSchema = Joi.object({
@@ -148,11 +160,12 @@ function makeBodyValidator(schema) {
 }
 
 module.exports = {
-  validateHotelSearch:    makeQueryValidator(searchHotelsSchema),
-  validateLiveSearch:     makeBodyValidator(liveSearchSchema),
-  validateHotelDetail:    makeBodyValidator(hotelDetailSchema),
-  validateHotelReview:    makeBodyValidator(hotelReviewSchema),
-  validateHotelBook:      makeBodyValidator(hotelBookSchema),
-  validateBookingDetails: makeBodyValidator(bookingDetailsSchema),
-  validateCancelBooking:  makeBodyValidator(cancelBookingSchema),
+  validateHotelSearch:      makeQueryValidator(searchHotelsSchema),
+  validateLiveSearch:       makeBodyValidator(liveSearchSchema),
+  validateHotelDetail:      makeBodyValidator(hotelDetailSchema),
+  validateHotelReview:      makeBodyValidator(hotelReviewSchema),
+  validateHotelBook:        makeBodyValidator(hotelBookSchema),
+  validateConfirmBooking:   makeBodyValidator(confirmBookingSchema),
+  validateBookingDetails:   makeBodyValidator(bookingDetailsSchema),
+  validateCancelBooking:    makeBodyValidator(cancelBookingSchema),
 };

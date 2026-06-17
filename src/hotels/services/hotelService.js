@@ -212,6 +212,19 @@ async function bookingDetailsService(body) {
   return data;
 }
 
+// ─── Confirm Booking (ON_HOLD → confirmed) ───────────────────────────────────
+
+async function confirmBookingService(body) {
+  const { bookingId, paymentInfos } = body;
+  logger.info(`[hotelService] confirmBooking: bookingId=${bookingId}, amount=${paymentInfos?.[0]?.amount}`);
+
+  const data = await post(ENDPOINTS.CONFIRM_BOOKING, body, undefined, 'booker');
+
+  logger.info(`[hotelService] confirmBooking: bookingId=${bookingId}, status=${data.order?.status ?? data.status ?? 'N/A'}`);
+
+  return data;
+}
+
 // ─── Cancel Booking ──────────────────────────────────────────────────────────
 
 async function cancelBookingService({ bookingId }) {
@@ -231,6 +244,7 @@ module.exports = {
   hotelDetailService,
   hotelReviewService,
   hotelBookService,
+  confirmBookingService,
   bookingDetailsService,
   cancelBookingService,
 };
