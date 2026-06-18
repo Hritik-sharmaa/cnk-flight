@@ -80,8 +80,7 @@ const travelerInfoSchema = Joi.object({
 }).unknown(true);
 
 const roomTravelerSchema = Joi.object({
-  travelerInfo: Joi.array().items(travelerInfoSchema).min(1).required(),
-  travellerInfo: Joi.array().items(travelerInfoSchema).optional(),
+  travellerInfo: Joi.array().items(travelerInfoSchema).min(1).required(),
 }).unknown(true);
 
 const gstInfoSchema = Joi.object({

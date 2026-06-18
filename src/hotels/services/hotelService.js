@@ -209,6 +209,7 @@ async function bookingDetailsService(body) {
 
   logger.info(`[hotelService] bookingDetails: status=${data.order?.status ?? 'N/A'}`);
 
+  delete data.debug_curl;
   return data;
 }
 
@@ -222,6 +223,7 @@ async function confirmBookingService(body) {
 
   logger.info(`[hotelService] confirmBooking: bookingId=${bookingId}, status=${data.order?.status ?? data.status ?? 'N/A'}`);
 
+  delete data.debug_curl;
   return data;
 }
 
