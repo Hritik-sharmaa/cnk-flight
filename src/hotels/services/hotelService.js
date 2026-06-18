@@ -5,6 +5,38 @@ const { ENDPOINTS } = require('../providers/tripjack/tripjackHotelConfig');
 const supabase = require('../../db/supabase');
 const logger = require('../../utils/logger');
 
+// ─── Guest details builder ────────────────────────────────────────────────────
+// Constructs the guest_details JSON that goes into hotel_bookings from fields
+// already present in the Book request body.
+
+function buildGuestDetails({ roomTravellerInfo, deliveryInfo }) {
+  const rooms = (roomTravellerInfo ?? []).map((room) => {
+    const pax = room.travellerInfo ?? room.travelerInfo ?? [];
+    return {
+      adults: pax.filter((t) => t.pt === 'ADULT').length,
+      ...(pax.some((t) => t.pt === 'CHILD') ? { children: pax.filter((t) => t.pt === 'CHILD').length } : {}),
+    };
+  });
+
+  const pax_details = (roomTravellerInfo ?? []).map((room) =>
+    (room.travellerInfo ?? room.travelerInfo ?? []).map((t) => ({
+      title: t.ti,
+      pax_type: t.pt === 'ADULT' ? 'adult' : 'child',
+      first_name: t.fN,
+      last_name: t.lN,
+      ...(t.pan ? { pan: t.pan } : {}),
+      ...(t.pNum ? { passport: t.pNum } : {}),
+    }))
+  );
+
+  const customer_email = deliveryInfo?.emails?.[0] ?? null;
+  const phone = deliveryInfo?.contacts?.[0] ?? null;
+  const code = deliveryInfo?.code?.[0] ?? '';
+  const customer_phone = phone ? `${code}${phone}` : null;
+
+  return { rooms, pax_details, customer_email, customer_phone };
+}
+
 // ─── Pagination helper ────────────────────────────────────────────────────────
 
 function buildPagination({ page, limit, total }) {
@@ -181,16 +213,59 @@ async function hotelReviewService(body) {
 }
 
 // ─── Step 4: Book ────────────────────────────────────────────────────────────
-// Spreads the full body to TripJack Booker service.
 
 async function hotelBookService(body) {
-  const { bookingId, paymentInfos } = body;
+  // Strip _meta before sending to TripJack — it's our internal field only
+  const { _meta, ...tripjackPayload } = body;
+  const { bookingId, paymentInfos, roomTravellerInfo, deliveryInfo } = tripjackPayload;
   const bookingMode = paymentInfos?.length ? 'INSTANT' : 'HOLD';
   logger.info(`[hotelService] hotelBook: bookingId=${bookingId}, mode=${bookingMode}`);
 
-  const data = await post(ENDPOINTS.BOOK, body, undefined, 'booker');
+  const data = await post(ENDPOINTS.BOOK, tripjackPayload, undefined, 'booker');
 
   logger.info(`[hotelService] hotelBook: bookingId=${data.bookingId}, status=${data.status?.success}`);
+
+  const confirmedId = data.bookingId ?? bookingId;
+  const bookingStatus = bookingMode === 'INSTANT'
+    ? (data.status?.success ? 'SUCCESS' : 'FAILED')
+    : 'ON_HOLD';
+  const now = new Date().toISOString();
+
+  // Fire-and-forget — each booking always gets its own fresh row (no upsert on supplier_booking_id
+  // to prevent cross-booking overwrites when TripJack reuses IDs in test env)
+  supabase.from('hotels_bookings').insert({
+    id: randomUUID(),
+    supplier: 'tripjack',
+    supplier_booking_id: confirmedId,
+    booking_status: bookingStatus,
+    amount: paymentInfos?.[0]?.amount ?? null,
+    currency: _meta?.currency ?? 'INR',
+    hotel_id: _meta?.hotel_id ?? null,
+    hotel_name: _meta?.hotel_name ?? null,
+    city: _meta?.city ?? null,
+    room_name: _meta?.room_name ?? null,
+    checkin_date: _meta?.checkin_date ?? null,
+    checkout_date: _meta?.checkout_date ?? null,
+    quote_id: _meta?.quote_id ?? null,
+    booking_reference: _meta?.booking_reference ?? null,
+    client_id: _meta?.client_id ?? null,
+    guest_details: buildGuestDetails({ roomTravellerInfo, deliveryInfo }),
+    booking_response: {
+      confirmation: {
+        status: bookingStatus,
+        success: data.status?.success ?? false,
+        booking_id: confirmedId,
+        actual_booking_id: confirmedId,
+        hotel_confirmation_number: null,
+      },
+      original_booking_id: bookingId,
+    },
+    created_at: now,
+    updated_at: now,
+  }).then(({ error }) => {
+    if (error) logger.error(`[hotelService] hotelBook: DB save failed for ${confirmedId}:`, error.message);
+    else logger.info(`[hotelService] hotelBook: saved to hotel_bookings, id=${confirmedId}, status=${bookingStatus}`);
+  });
 
   return {
     bookingId: data.bookingId,
@@ -216,12 +291,77 @@ async function bookingDetailsService(body) {
 // ─── Confirm Booking (ON_HOLD → confirmed) ───────────────────────────────────
 
 async function confirmBookingService(body) {
-  const { bookingId, paymentInfos } = body;
+  const { _meta, ...tripjackPayload } = body;
+  const { bookingId, paymentInfos } = tripjackPayload;
   logger.info(`[hotelService] confirmBooking: bookingId=${bookingId}, amount=${paymentInfos?.[0]?.amount}`);
 
-  const data = await post(ENDPOINTS.CONFIRM_BOOKING, body, undefined, 'booker');
+  const data = await post(ENDPOINTS.CONFIRM_BOOKING, tripjackPayload, undefined, 'booker');
 
-  logger.info(`[hotelService] confirmBooking: bookingId=${bookingId}, status=${data.order?.status ?? data.status ?? 'N/A'}`);
+  const success = data.status?.success ?? false;
+  logger.info(`[hotelService] confirmBooking: bookingId=${bookingId}, success=${success}`);
+
+  const confirmedId = data.bookingId ?? bookingId;
+  const bookingStatus = success ? 'SUCCESS' : 'FAILED';
+  const now = new Date().toISOString();
+
+  const bookingResponse = {
+    confirmation: {
+      status: bookingStatus,
+      success,
+      booking_id: confirmedId,
+      actual_booking_id: confirmedId,
+      hotel_confirmation_number: null,
+    },
+    original_booking_id: bookingId,
+  };
+
+  // Try to update the existing ON_HOLD record first; if none exists, insert a new one.
+  // Scoped to booking_status=ON_HOLD so a re-confirm attempt never stomps a SUCCESS row.
+  (async () => {
+    const { data: updated, error: updateError } = await supabase
+      .from('hotels_bookings')
+      .update({ supplier_booking_id: confirmedId, booking_status: bookingStatus, booking_response: bookingResponse, updated_at: now })
+      .eq('supplier_booking_id', bookingId)
+      .eq('booking_status', 'ON_HOLD')
+      .select('id');
+
+    if (updateError) {
+      logger.error(`[hotelService] confirmBooking: DB update failed for ${bookingId}:`, updateError.message);
+      return;
+    }
+
+    if (updated && updated.length > 0) {
+      logger.info(`[hotelService] confirmBooking: updated ON_HOLD → ${bookingStatus} for ${confirmedId}`);
+      return;
+    }
+
+    // No pre-existing ON_HOLD record — insert fresh (handles cases where hotelBook was
+    // called before this feature existed or came from another system)
+    const { error: insertError } = await supabase.from('hotels_bookings').insert({
+      id: randomUUID(),
+      supplier: 'tripjack',
+      supplier_booking_id: confirmedId,
+      booking_status: bookingStatus,
+      amount: paymentInfos?.[0]?.amount ?? null,
+      currency: _meta?.currency ?? 'INR',
+      hotel_id: _meta?.hotel_id ?? null,
+      hotel_name: _meta?.hotel_name ?? null,
+      city: _meta?.city ?? null,
+      room_name: _meta?.room_name ?? null,
+      checkin_date: _meta?.checkin_date ?? null,
+      checkout_date: _meta?.checkout_date ?? null,
+      quote_id: _meta?.quote_id ?? null,
+      booking_reference: _meta?.booking_reference ?? null,
+      client_id: _meta?.client_id ?? null,
+      guest_details: null,
+      booking_response: bookingResponse,
+      created_at: now,
+      updated_at: now,
+    });
+
+    if (insertError) logger.error(`[hotelService] confirmBooking: DB insert failed for ${confirmedId}:`, insertError.message);
+    else logger.info(`[hotelService] confirmBooking: inserted new record for ${confirmedId}, status=${bookingStatus}`);
+  })().catch((e) => logger.error('[hotelService] confirmBooking: DB operation error:', e.message));
 
   delete data.debug_curl;
   return data;

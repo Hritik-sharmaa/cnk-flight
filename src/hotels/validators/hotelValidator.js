@@ -61,6 +61,22 @@ const hotelReviewSchema = Joi.object({
   hid: Joi.string().required(),
 }).unknown(true);
 
+// ─── Booking metadata (not forwarded to TripJack) ───────────────────────────
+// Carries hotel context from the frontend so cnk-flight can save it to DB.
+
+const bookingMetaSchema = Joi.object({
+  hotel_id:          Joi.number().integer().optional(),
+  hotel_name:        Joi.string().optional(),
+  city:              Joi.string().optional(),
+  room_name:         Joi.string().optional(),
+  checkin_date:      Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  checkout_date:     Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  quote_id:          Joi.string().optional(),
+  booking_reference: Joi.string().optional(),
+  client_id:         Joi.string().optional(),
+  currency:          Joi.string().length(3).uppercase().optional(),
+}).unknown(true).optional();
+
 // ─── Step 4: Book ───────────────────────────────────────────────────────────
 
 const travelerInfoSchema = Joi.object({
@@ -106,6 +122,7 @@ const hotelBookSchema = Joi.object({
     }).unknown(true)
   ).optional(),
   gstInfo: gstInfoSchema.optional(),
+  _meta: bookingMetaSchema,
 }).unknown(true);
 
 // ─── Confirm booking (ON_HOLD → confirmed) ───────────────────────────────────
@@ -118,6 +135,7 @@ const confirmBookingSchema = Joi.object({
       type: Joi.string().valid('HOTEL').default('HOTEL'),
     }).unknown(true)
   ).min(1).required(),
+  _meta: bookingMetaSchema,
 }).unknown(true);
 
 // ─── Booking details (poll) ──────────────────────────────────────────────────
