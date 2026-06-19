@@ -17,18 +17,36 @@ const app = require('./src/app');
     process.exit(1);
   }
 
+  let privKeyObj;
   try {
-    crypto.createPrivateKey(privateKey);
+    privKeyObj = crypto.createPrivateKey(privateKey);
   } catch (e) {
     console.error('[STARTUP] FATAL: ICICI_PRIVATE_KEY is invalid:', e.message);
     process.exit(1);
   }
 
+  let pubKeyObj;
   try {
-    crypto.createPublicKey(publicCert);
+    pubKeyObj = crypto.createPublicKey(publicCert);
   } catch (e) {
     console.error('[STARTUP] FATAL: ICICI_PUBLIC_CERT is invalid:', e.message);
     process.exit(1);
+  }
+
+  // Log key sizes — mismatched key sizes are the #1 cause of "data too large for modulus"
+  const privKeyDetails = privKeyObj.asymmetricKeyDetails;
+  const pubKeyDetails = pubKeyObj.asymmetricKeyDetails;
+  const privBits = privKeyDetails?.modulusLength ?? '?';
+  const pubBits = pubKeyDetails?.modulusLength ?? '?';
+  console.log(`[STARTUP] ICICI_PRIVATE_KEY: ${privBits}-bit RSA private key`);
+  console.log(`[STARTUP] ICICI_PUBLIC_CERT: ${pubBits}-bit RSA public key`);
+
+  if (privBits !== pubBits) {
+    console.error(`[STARTUP] FATAL: Key size mismatch — private key is ${privBits}-bit but public cert is ${pubBits}-bit. They must match.`);
+    process.exit(1);
+  }
+  if (privBits !== 4096) {
+    console.warn(`[STARTUP] WARNING: ICICI requires a 4096-bit key (section 1.5 of Ecollection_Validation_v1.pdf). Current key is ${privBits}-bit. ICICI will encrypt the session key with the 4096-bit cert you provided to them — decryption will fail if this key doesn't match.`);
   }
 
   console.log('[STARTUP] ICICI keys validated OK');

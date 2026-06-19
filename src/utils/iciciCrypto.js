@@ -18,7 +18,17 @@ async function decryptIciciPayload(body) {
   if (!privateKeyPem) throw new Error('ICICI_PRIVATE_KEY env var is not set');
 
   // Step 1: Decrypt the session key with our RSA private key (PKCS1 padding)
-  const encryptedKeyBuf = Buffer.from(body.encryptedKey, 'base64');
+  const encryptedKeyBuf = Buffer.from(body.encryptedKey || '', 'base64');
+  const privKeyObj = crypto.createPrivateKey(privateKeyPem);
+  const modulusBytes = (privKeyObj.asymmetricKeyDetails?.modulusLength ?? 0) / 8;
+  logger.info(`[IciciCrypto] RSA decrypt: key=${modulusBytes * 8}-bit (modulus=${modulusBytes}B), encryptedKey=${encryptedKeyBuf.length}B`);
+  if (encryptedKeyBuf.length > modulusBytes) {
+    throw new Error(
+      `encryptedKey size (${encryptedKeyBuf.length}B) exceeds RSA key modulus (${modulusBytes}B / ${modulusBytes * 8}-bit). ` +
+      `ICICI encrypted with a ${encryptedKeyBuf.length * 8}-bit public cert but ICICI_PRIVATE_KEY is only ${modulusBytes * 8}-bit. ` +
+      `Deploy the matching ${encryptedKeyBuf.length * 8}-bit private key.`
+    );
+  }
   const sessionKey = crypto.privateDecrypt(
     { key: privateKeyPem, padding: crypto.constants.RSA_PKCS1_PADDING },
     encryptedKeyBuf
