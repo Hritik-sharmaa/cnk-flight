@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const logger = require('./logger');
 
 /**
  * Decrypts an ICICI eCollections hybrid-encrypted payload.
@@ -39,8 +40,11 @@ async function decryptIciciPayload(body) {
     ciphertext = encryptedDataBuf.subarray(16);
   }
 
-  // Step 3: Decrypt with AES-128-CBC or AES-256-CBC depending on session key length
-  const algo = sessionKey.length === 32 ? 'aes-256-cbc' : 'aes-128-cbc';
+  // Step 3: Decrypt with AES-CBC — ICICI sends 16-byte (128-bit) or 32-byte (256-bit) session keys only
+  logger.debug(`[IciciCrypto] sessionKey length after RSA decrypt: ${sessionKey.length} bytes`);
+  const aesAlgoMap = { 16: 'aes-128-cbc', 32: 'aes-256-cbc' };
+  const algo = aesAlgoMap[sessionKey.length];
+  if (!algo) throw new Error(`Unexpected AES session key length: ${sessionKey.length} bytes — check ICICI_PRIVATE_KEY matches the certificate sent to ICICI`);
   const decipher = crypto.createDecipheriv(algo, sessionKey, iv);
   const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 
