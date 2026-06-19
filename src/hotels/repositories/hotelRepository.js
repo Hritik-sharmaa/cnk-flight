@@ -145,7 +145,8 @@ async function searchHotels({ cityId, q, minRating, sortBy = 'rating_desc', page
   // ── 2. Build filtered query factory ─────────────────────────────────────
   const applyFilters = (base) => {
     let query = base.eq('is_deleted', false);
-    if (region)    query = query.eq('region_id', region.id);
+    // Match by region_id OR city_name (covers hotels whose region_id was not resolved at sync time)
+    if (region)    query = query.or(`region_id.eq.${region.id},city_name.ilike.%${region.city_name}%`);
     if (q)         query = query.textSearch('search_vector', sanitizeQ(q), { type: 'plain', config: 'simple' });
     if (minRating) query = query.gte('rating', minRating);
     return query;

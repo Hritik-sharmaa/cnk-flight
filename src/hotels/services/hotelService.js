@@ -141,7 +141,8 @@ async function liveSearchHotelsService(body) {
     ...rest,                                             // checkIn, checkOut, rooms, currency, nationality, timeoutMs, + any extra TripJack fields
     correlationId: correlationId ?? randomUUID(),        // use client-provided or generate
     ...(cityInfo ? { cityCode: cityInfo.supplier_region_id } : {}),
-    ...(hids?.length ? { hids } : {}),
+    // TripJack requires hids as integers, not strings
+    ...(hids?.length ? { hids: hids.map((id) => parseInt(String(id), 10)) } : {}),
   };
 
   logger.info('[hotelService] liveSearch: sending payload to TripJack', { payload });
@@ -172,6 +173,7 @@ async function hotelDetailService(body) {
 
   const payload = {
     ...body,
+    hid: parseInt(String(hid), 10),   // TripJack pricing requires hid as integer
     correlationId: correlationId ?? randomUUID(),
   };
 
@@ -246,6 +248,7 @@ async function hotelBookService(body) {
     room_name: _meta?.room_name ?? null,
     checkin_date: _meta?.checkin_date ?? null,
     checkout_date: _meta?.checkout_date ?? null,
+    deadline_datetime: _meta?.deadline_datetime ?? null,
     quote_id: _meta?.quote_id ?? null,
     booking_reference: _meta?.booking_reference ?? null,
     client_id: _meta?.client_id ?? null,
@@ -264,7 +267,7 @@ async function hotelBookService(body) {
     updated_at: now,
   }).then(({ error }) => {
     if (error) logger.error(`[hotelService] hotelBook: DB save failed for ${confirmedId}:`, error.message);
-    else logger.info(`[hotelService] hotelBook: saved to hotel_bookings, id=${confirmedId}, status=${bookingStatus}`);
+    else logger.info(`[hotelService] hotelBook: saved to hotels_bookings, id=${confirmedId}, status=${bookingStatus}`);
   });
 
   return {
@@ -374,7 +377,25 @@ async function cancelBookingService({ bookingId }) {
 
   const data = await post(`${ENDPOINTS.CANCEL_BOOKING}/${bookingId}`, {}, undefined, 'booker');
 
-  logger.info(`[hotelService] cancelBooking: bookingId=${bookingId}, status=${data.status?.success}`);
+  const success = data.status?.success ?? false;
+  logger.info(`[hotelService] cancelBooking: bookingId=${bookingId}, status=${success}`);
+
+  // Update hotels_bookings: move to CANCELLATION_PENDING (TripJack Ops processes offline;
+  // the daily sync cron will poll booking-details and flip to CANCELLED once confirmed).
+  const newStatus = success ? 'CANCELLATION_PENDING' : 'CANCEL_FAILED';
+  const now = new Date().toISOString();
+  supabase
+    .from('hotels_bookings')
+    .update({
+      booking_status: newStatus,
+      cancellation_response: data,
+      updated_at: now,
+    })
+    .eq('supplier_booking_id', bookingId)
+    .then(({ error }) => {
+      if (error) logger.error(`[hotelService] cancelBooking: DB update failed for ${bookingId}:`, error.message);
+      else logger.info(`[hotelService] cancelBooking: DB updated to ${newStatus} for ${bookingId}`);
+    });
 
   return { bookingId, status: data.status };
 }
