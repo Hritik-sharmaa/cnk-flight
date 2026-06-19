@@ -13,7 +13,8 @@ const app = express();
 
 app.use(helmet());
 app.use(cors({
-  origin: (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean),
+  // origin: (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean),
+  origin: '*',
   credentials: true,
 }));
 app.use(express.json());
