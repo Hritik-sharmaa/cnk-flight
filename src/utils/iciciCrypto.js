@@ -77,7 +77,7 @@ async function decryptIciciPayload(body) {
   if (!algo) {
     throw new Error(
       `Unexpected AES session key length: ${sessionKey.length}B. ` +
-      `Expected 16B (AES-128) or 32B (AES-256). ` +
+      'Expected 16B (AES-128) or 32B (AES-256). ' +
       `RSA decryption likely used wrong padding — oaepHashingAlgorithm was "${oaep}".`
     );
   }

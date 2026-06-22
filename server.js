@@ -44,8 +44,8 @@ const app = require('./src/app');
   if (privBits !== 4096) {
     console.error(
       `[STARTUP] FATAL: ICICI_PRIVATE_KEY is ${privBits}-bit. ` +
-      `ICICI Bank requires a 4096-bit key (section 1.5 of Ecollection_Validation_v1.pdf). ` +
-      `They will encrypt every session key with the 4096-bit cert you gave them during onboarding — decryption will always fail with a smaller key.`
+      'ICICI Bank requires a 4096-bit key (section 1.5 of Ecollection_Validation_v1.pdf). ' +
+      'They will encrypt every session key with the 4096-bit cert you gave them during onboarding — decryption will always fail with a smaller key.'
     );
     process.exit(1);
   }
