@@ -89,6 +89,7 @@ async function upsertHotels(hotels) {
       hotel_id: hotelId,
       image_url: img.imageUrl,
       image_size: img.imageSize,
+      is_hero_image: img.isHeroImage ?? false,
       sort_order: img.sortOrder,
     }));
     facilities.forEach((f) => allFacilities.push({

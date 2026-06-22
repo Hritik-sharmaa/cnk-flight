@@ -25,9 +25,10 @@ const BASE_URLS = {
 
 const ENDPOINTS = {
   // Static content sync (HMS service)
-  CITY_LIST:           '/hms/v3/content/fetch-city-regionIds',    // GET  — HMS
-  HOTEL_MAPPING_SYNC:  '/hms/v3/content/fetch-hotel-mapping-sync', // POST — HMS (returns tjHotelId list, nextCursor-paginated)
-  HOTEL_CONTENT:       '/hms/v3/content/fetch-hotel-content',      // POST — HMS (full content, max 100 IDs/req)
+  CITY_LIST:                 '/hms/v3/content/fetch-city-regionIds',          // GET  — HMS
+  HOTEL_MAPPING_SYNC:        '/hms/v3/content/fetch-hotel-mapping-sync',       // POST — HMS type:NEW|UPDATE
+  HOTEL_DELETED_MAPPING_SYNC: '/hms/v3/content/fetch-deleted-hotel-mapping',   // POST — HMS type:DELETE
+  HOTEL_CONTENT:             '/hms/v3/content/fetch-hotel-content',            // POST — HMS (full content, max 100 IDs/req)
 
   // Booking flow (Steps 1–4)
   LISTING:             '/hms/v3/hotel/listing',                   // POST — HMS  (Step 1: Search)
