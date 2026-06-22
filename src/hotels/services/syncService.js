@@ -86,7 +86,7 @@ async function syncCities(mode) {
  * @param {'live'|'test'} [mode]
  * @param {string} [lastUpdateTime]  ISO 8601 — only sync hotels updated after this time.
  *                                   Use for incremental syncs. Omit for full sync.
- * @param {'NEW'|'UPDATED'} [type]   Default: 'NEW'
+ * @param {'NEW'|'UPDATE'} [type]   Default: 'NEW'
  */
 async function syncHotels(mode, lastUpdateTime, type = 'NEW') {
   const logId = await createSyncLog({
@@ -156,8 +156,11 @@ async function syncHotels(mode, lastUpdateTime, type = 'NEW') {
 
 /**
  * Fetch deleted hotel IDs from TripJack and mark them inactive in hotels_inventory.
- * Uses fetch-hotel-mapping-sync with type=DELETED.
- * @param {string} [lastUpdateTime] ISO 8601 — hotels deleted after this timestamp.
+ * TripJack's fetch-hotel-mapping-sync only accepts type=NEW or type=UPDATE — there is
+ * no DELETED type. Deactivated hotels surface as type=UPDATE entries whose content
+ * has is_active=false, so we page through UPDATE mappings, fetch content, and mark
+ * deleted only the ones flagged inactive.
+ * @param {string} [lastUpdateTime] ISO 8601 — hotels updated after this timestamp.
  *                                  Defaults to 30 days ago if omitted.
  * @param {'live'|'test'} [mode]
  */
@@ -178,18 +181,32 @@ async function syncDeletedHotels(lastUpdateTime, mode) {
 
   try {
     do {
-      const body = { type: 'DELETED', lastUpdateTime: since };
+      const body = { type: 'UPDATE', lastUpdateTime: since };
       if (nextCursor) body.cursor = nextCursor; // request field is 'cursor', response field is 'nextCursor'
 
-      logger.info(`[syncService] Fetching deleted hotels page ${page} (cursor: ${nextCursor ?? 'first'})`);
+      logger.info(`[syncService] Fetching updated-hotel mapping page ${page} (cursor: ${nextCursor ?? 'first'})`);
 
       const res = await post(ENDPOINTS.HOTEL_MAPPING_SYNC, body, mode, 'hms');
-      const deletedIds = (res.hotels ?? []).map((h) => String(h.tjHotelId ?? '')).filter(Boolean);
+      const hotelIds = (res.hotels ?? []).map((h) => String(h.tjHotelId ?? '')).filter(Boolean);
 
-      if (deletedIds.length) {
-        const count = await markHotelsDeleted(deletedIds);
-        totalProcessed += count;
-        logger.info(`[syncService] Deleted page ${page} — found ${deletedIds.length}, marked ${count}`);
+      if (hotelIds.length) {
+        const batches = chunk(hotelIds, PAGINATION.HOTEL_CONTENT_SIZE);
+        const tasks = batches.map((batchIds, b) => async () => {
+          const contentRes = await post(ENDPOINTS.HOTEL_CONTENT, { hotelIds: batchIds }, mode, 'hms');
+          const deletedIds = (contentRes.hotels ?? [])
+            .filter((h) => h.is_active === false)
+            .map((h) => String(h.tjHotelId ?? ''))
+            .filter(Boolean);
+          if (!deletedIds.length) return 0;
+          const count = await markHotelsDeleted(deletedIds);
+          logger.info(`[syncService]   batch ${b + 1}/${batches.length} — marked ${count} deleted`);
+          return count;
+        });
+
+        const counts = await runConcurrent(tasks, 3);
+        const pageTotal = counts.reduce((s, c) => s + c, 0);
+        totalProcessed += pageTotal;
+        logger.info(`[syncService] Mapping page ${page} — checked ${hotelIds.length} updated hotels, marked ${pageTotal} deleted`);
       }
 
       nextCursor = res.nextCursor ?? null;
