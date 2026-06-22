@@ -1,7 +1,7 @@
 name: Hotel Sync
 
 # Schedule summary (all times UTC = IST-5:30):
-#   02:00 UTC daily  → incremental sync: new + deleted hotels since yesterday
+#   02:00 UTC daily  → incremental sync: new + updated + deleted hotels since yesterday
 #   00:00 UTC Sunday → full sync: rebuild entire city + hotel catalogue (every 7 days)
 #
 # TripJack V3 Static Content API (confirmed by TripJack support):
@@ -26,6 +26,7 @@ on:
           - cities
           - hotels-full  # all hotels from 2020 onwards (weekly rebuild)
           - hotels-incremental  # only hotels added/changed since yesterday
+          - hotels-updated      # only hotels whose data changed since yesterday
           - deleted
 
 env:
@@ -95,11 +96,12 @@ jobs:
   incremental-sync:
     name: Incremental Hotel Sync (Daily)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     if: |
       (github.event_name == 'schedule' && github.event.schedule == '0 2 * * *') ||
       (github.event_name == 'workflow_dispatch' && (
         inputs.sync_type == 'hotels-incremental' ||
+        inputs.sync_type == 'hotels-updated' ||
         inputs.sync_type == 'deleted'
       ))
 
@@ -133,6 +135,28 @@ jobs:
           echo "HTTP $HTTP_CODE"
 
           [ "$HTTP_CODE" = "200" ] || { echo "Incremental hotel sync failed"; exit 1; }
+
+      - name: Sync Updated Hotels (incremental)
+        if: >
+          github.event_name == 'schedule' ||
+          inputs.sync_type == 'hotels-incremental' ||
+          inputs.sync_type == 'hotels-updated'
+        run: |
+          SINCE="${{ steps.ts.outputs.since }}"
+          echo "Fetching hotels updated since $SINCE..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            --max-time 600 \
+            -X POST "$BASE_URL/api/v1/hotels/sync/hotels?type=UPDATE&lastUpdateTime=${SINCE}" \
+            -H "x-api-key: $API_KEY" \
+            -H "Content-Type: application/json")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+          echo "HTTP $HTTP_CODE"
+
+          [ "$HTTP_CODE" = "200" ] || { echo "Updated hotel sync failed"; exit 1; }
 
       - name: Sync Deleted Hotels
         if: >
