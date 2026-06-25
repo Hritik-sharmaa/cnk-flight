@@ -53,11 +53,12 @@ jobs:
           github.event_name == 'schedule' ||
           inputs.sync_type == 'all' ||
           inputs.sync_type == 'cities'
+        id: sync_cities
         run: |
           echo "Starting city sync..."
 
           RESPONSE=$(curl -s -w "\n%{http_code}" \
-            --max-time 300 \
+            --max-time 30 \
             -X POST "$BASE_URL/api/v1/hotels/sync/cities" \
             -H "x-api-key: $API_KEY" \
             -H "Content-Type: application/json")
@@ -67,7 +68,31 @@ jobs:
           echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
           echo "HTTP $HTTP_CODE"
 
-          [ "$HTTP_CODE" = "200" ] || { echo "City sync failed"; exit 1; }
+          [ "$HTTP_CODE" = "202" ] || { echo "City sync failed"; exit 1; }
+
+          LOG_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('logId',''))" 2>/dev/null || echo "")
+          echo "log_id=$LOG_ID" >> $GITHUB_OUTPUT
+          echo "Sync started with logId=$LOG_ID"
+
+      - name: Wait for City Sync
+        if: steps.sync_cities.outputs.log_id != ''
+        run: |
+          LOG_ID="${{ steps.sync_cities.outputs.log_id }}"
+          echo "Waiting 3 minutes for city sync to complete..."
+          sleep 180
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            --max-time 15 \
+            "$BASE_URL/api/v1/hotels/sync/status/$LOG_ID" \
+            -H "x-api-key: $API_KEY")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+
+          STATUS=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('status',''))" 2>/dev/null || echo "")
+          echo "City sync status: $STATUS"
+          [ "$STATUS" = "success" ] || { echo "City sync did not complete successfully"; exit 1; }
 
       - name: Sync Hotels (full catalogue — all hotels since 2020)
         if: >
