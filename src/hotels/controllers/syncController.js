@@ -2,34 +2,71 @@ const asyncHandler = require('../../utils/asyncHandler');
 const response = require('../../utils/response');
 const logger = require('../../utils/logger');
 const { syncCities, syncHotels, syncDeletedHotels } = require('../services/syncService');
+const { createSyncLog, getSyncLog } = require('../repositories/syncLogRepository');
+const { ENDPOINTS } = require('../providers/tripjack/tripjackHotelConfig');
+
+function runInBackground(label, fn) {
+  fn().then(
+    (result) => logger.info(`[syncController] ${label} completed — ${result.recordsProcessed} records`),
+    (err)    => logger.error(`[syncController] ${label} failed`, { error: err.message }),
+  );
+}
 
 const triggerCitySync = asyncHandler(async (req, res) => {
   const mode = req.query.mode;
-  logger.info(`City sync triggered [mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}]`);
-  const result = await syncCities(mode);
-  logger.info(`City sync completed — ${result.recordsProcessed} records`);
-  return response(res, true, 200, 'City sync completed successfully', { mode, recordsProcessed: result.recordsProcessed });
+  const logId = await createSyncLog({
+    supplier: 'tripjack', syncType: 'cities',
+    requestUrl: ENDPOINTS.CITY_LIST, requestPayload: { mode },
+  });
+  logger.info(`City sync triggered [mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, logId=${logId}]`);
+  runInBackground('City sync', () => syncCities(mode, logId));
+  return response(res, true, 202, 'City sync started', { logId });
 });
 
 const triggerHotelSync = asyncHandler(async (req, res) => {
   const mode           = req.query.mode;
   const lastUpdateTime = req.query.lastUpdateTime ?? null;
   const type           = req.query.type ?? 'NEW';
-
-  logger.info(`Hotel sync triggered [mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, type=${type}, since=${lastUpdateTime ?? 'all'}]`);
-  const result = await syncHotels(mode, lastUpdateTime, type);
-  logger.info(`Hotel sync completed — ${result.recordsProcessed} records`);
-  return response(res, true, 200, 'Hotel sync completed successfully', { mode, type, lastUpdateTime, recordsProcessed: result.recordsProcessed });
+  const logId = await createSyncLog({
+    supplier: 'tripjack', syncType: 'hotels',
+    requestUrl: ENDPOINTS.HOTEL_MAPPING_SYNC, requestPayload: { mode, lastUpdateTime, type },
+  });
+  logger.info(`Hotel sync triggered [mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, type=${type}, since=${lastUpdateTime ?? 'all'}, logId=${logId}]`);
+  runInBackground(`Hotel sync (${type})`, () => syncHotels(mode, lastUpdateTime, type, logId));
+  return response(res, true, 202, 'Hotel sync started', { logId });
 });
 
 const triggerDeletedHotelSync = asyncHandler(async (req, res) => {
   const mode           = req.query.mode;
   const lastUpdateTime = req.query.lastUpdateTime ?? null;
-
-  logger.info(`Deleted hotel sync triggered [mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, since=${lastUpdateTime ?? 'last 30 days'}]`);
-  const result = await syncDeletedHotels(lastUpdateTime, mode);
-  logger.info(`Deleted hotel sync completed — ${result.recordsProcessed} records marked deleted`);
-  return response(res, true, 200, 'Deleted hotel sync completed successfully', { mode, lastUpdateTime, recordsProcessed: result.recordsProcessed });
+  const since = lastUpdateTime
+    ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19) + 'Z';
+  const logId = await createSyncLog({
+    supplier: 'tripjack', syncType: 'hotels_deleted',
+    requestUrl: ENDPOINTS.HOTEL_DELETED_MAPPING_SYNC, requestPayload: { lastUpdateTime: since, mode },
+  });
+  logger.info(`Deleted hotel sync triggered [mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, since=${since}, logId=${logId}]`);
+  runInBackground('Deleted hotel sync', () => syncDeletedHotels(lastUpdateTime, mode, logId));
+  return response(res, true, 202, 'Deleted hotel sync started', { logId });
 });
 
-module.exports = { triggerCitySync, triggerHotelSync, triggerDeletedHotelSync };
+const getSyncStatus = asyncHandler(async (req, res) => {
+  const { logId } = req.params;
+  const log = await getSyncLog(logId);
+
+  if (!log.completed_at) {
+    const ageMs = Date.now() - new Date(log.started_at).getTime();
+    if (ageMs > 15 * 60 * 1000) {
+      return response(res, false, 200, 'Sync timed out (no completion recorded)', { status: 'failed', logId });
+    }
+    return response(res, true, 200, 'Sync still in progress', { status: 'in_progress', logId });
+  }
+
+  if (!log.success) {
+    return response(res, false, 200, 'Sync failed', { status: 'failed', logId, error: log.error_message });
+  }
+
+  return response(res, true, 200, 'Sync completed', { status: 'success', logId, recordsProcessed: log.records_processed });
+});
+
+module.exports = { triggerCitySync, triggerHotelSync, triggerDeletedHotelSync, getSyncStatus };

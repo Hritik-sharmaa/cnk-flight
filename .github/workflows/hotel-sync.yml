@@ -119,12 +119,13 @@ jobs:
         if: >
           github.event_name == 'schedule' ||
           inputs.sync_type == 'hotels-incremental'
+        id: sync_new
         run: |
           SINCE="${{ steps.ts.outputs.since }}"
-          echo "Fetching hotels added since $SINCE..."
+          echo "Triggering new hotel sync since $SINCE..."
 
           RESPONSE=$(curl -s -w "\n%{http_code}" \
-            --max-time 600 \
+            --max-time 30 \
             -X POST "$BASE_URL/api/v1/hotels/sync/hotels?type=NEW&lastUpdateTime=${SINCE}" \
             -H "x-api-key: $API_KEY" \
             -H "Content-Type: application/json")
@@ -134,19 +135,44 @@ jobs:
           echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
           echo "HTTP $HTTP_CODE"
 
-          [ "$HTTP_CODE" = "200" ] || { echo "Incremental hotel sync failed"; exit 1; }
+          [ "$HTTP_CODE" = "202" ] || { echo "Failed to trigger new hotel sync"; exit 1; }
+
+          LOG_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('logId',''))" 2>/dev/null || echo "")
+          echo "log_id=$LOG_ID" >> $GITHUB_OUTPUT
+          echo "Sync started with logId=$LOG_ID"
+
+      - name: Wait for New Hotel Sync
+        if: steps.sync_new.outputs.log_id != ''
+        run: |
+          LOG_ID="${{ steps.sync_new.outputs.log_id }}"
+          echo "Waiting 3 minutes for sync to complete..."
+          sleep 180
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            --max-time 15 \
+            "$BASE_URL/api/v1/hotels/sync/status/$LOG_ID" \
+            -H "x-api-key: $API_KEY")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+
+          STATUS=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('status',''))" 2>/dev/null || echo "")
+          echo "Sync status: $STATUS"
+          [ "$STATUS" = "success" ] || { echo "New hotel sync did not complete successfully"; exit 1; }
 
       - name: Sync Updated Hotels (incremental)
         if: >
           github.event_name == 'schedule' ||
           inputs.sync_type == 'hotels-incremental' ||
           inputs.sync_type == 'hotels-updated'
+        id: sync_updated
         run: |
           SINCE="${{ steps.ts.outputs.since }}"
-          echo "Fetching hotels updated since $SINCE..."
+          echo "Triggering updated hotel sync since $SINCE..."
 
           RESPONSE=$(curl -s -w "\n%{http_code}" \
-            --max-time 600 \
+            --max-time 30 \
             -X POST "$BASE_URL/api/v1/hotels/sync/hotels?type=UPDATE&lastUpdateTime=${SINCE}" \
             -H "x-api-key: $API_KEY" \
             -H "Content-Type: application/json")
@@ -156,19 +182,44 @@ jobs:
           echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
           echo "HTTP $HTTP_CODE"
 
-          [ "$HTTP_CODE" = "200" ] || { echo "Updated hotel sync failed"; exit 1; }
+          [ "$HTTP_CODE" = "202" ] || { echo "Failed to trigger updated hotel sync"; exit 1; }
+
+          LOG_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('logId',''))" 2>/dev/null || echo "")
+          echo "log_id=$LOG_ID" >> $GITHUB_OUTPUT
+          echo "Sync started with logId=$LOG_ID"
+
+      - name: Wait for Updated Hotel Sync
+        if: steps.sync_updated.outputs.log_id != ''
+        run: |
+          LOG_ID="${{ steps.sync_updated.outputs.log_id }}"
+          echo "Waiting 5 minutes for sync to complete..."
+          sleep 300
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            --max-time 15 \
+            "$BASE_URL/api/v1/hotels/sync/status/$LOG_ID" \
+            -H "x-api-key: $API_KEY")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+
+          STATUS=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('status',''))" 2>/dev/null || echo "")
+          echo "Sync status: $STATUS"
+          [ "$STATUS" = "success" ] || { echo "Updated hotel sync did not complete successfully"; exit 1; }
 
       - name: Sync Deleted Hotels
         if: >
           github.event_name == 'schedule' ||
           inputs.sync_type == 'hotels-incremental' ||
           inputs.sync_type == 'deleted'
+        id: sync_deleted
         run: |
           SINCE="${{ steps.ts.outputs.since }}"
-          echo "Fetching hotels deleted since $SINCE..."
+          echo "Triggering deleted hotel sync since $SINCE..."
 
           RESPONSE=$(curl -s -w "\n%{http_code}" \
-            --max-time 300 \
+            --max-time 30 \
             -X POST "$BASE_URL/api/v1/hotels/sync/hotels-deleted?lastUpdateTime=${SINCE}" \
             -H "x-api-key: $API_KEY" \
             -H "Content-Type: application/json")
@@ -178,4 +229,28 @@ jobs:
           echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
           echo "HTTP $HTTP_CODE"
 
-          [ "$HTTP_CODE" = "200" ] || { echo "Deleted hotel sync failed"; exit 1; }
+          [ "$HTTP_CODE" = "202" ] || { echo "Failed to trigger deleted hotel sync"; exit 1; }
+
+          LOG_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('logId',''))" 2>/dev/null || echo "")
+          echo "log_id=$LOG_ID" >> $GITHUB_OUTPUT
+          echo "Sync started with logId=$LOG_ID"
+
+      - name: Wait for Deleted Hotel Sync
+        if: steps.sync_deleted.outputs.log_id != ''
+        run: |
+          LOG_ID="${{ steps.sync_deleted.outputs.log_id }}"
+          echo "Waiting 2 minutes for sync to complete..."
+          sleep 120
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            --max-time 15 \
+            "$BASE_URL/api/v1/hotels/sync/status/$LOG_ID" \
+            -H "x-api-key: $API_KEY")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+
+          STATUS=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('status',''))" 2>/dev/null || echo "")
+          echo "Sync status: $STATUS"
+          [ "$STATUS" = "success" ] || { echo "Deleted hotel sync did not complete successfully"; exit 1; }

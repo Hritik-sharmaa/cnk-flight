@@ -227,11 +227,12 @@ CREATE TABLE IF NOT EXISTS hotels_images (
 
     hotel_id    BIGINT REFERENCES hotels_inventory (id) ON DELETE CASCADE,
 
-    image_url   TEXT NOT NULL,
-    image_size  VARCHAR(50),
-    sort_order  INT DEFAULT 0,
+    image_url      TEXT NOT NULL,
+    image_size     VARCHAR(50),
+    is_hero_image  BOOLEAN DEFAULT FALSE,
+    sort_order     INT DEFAULT 0,
 
-    created_at  TIMESTAMP DEFAULT NOW()
+    created_at     TIMESTAMP DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_hotels_images_hotel
@@ -239,8 +240,9 @@ CREATE INDEX IF NOT EXISTS idx_hotels_images_hotel
 
 -- Migrations: add columns if the table already exists without them
 ALTER TABLE hotels_images
-    ADD COLUMN IF NOT EXISTS image_size  VARCHAR(50),
-    ADD COLUMN IF NOT EXISTS sort_order  INT DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS image_size     VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS is_hero_image  BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS sort_order     INT DEFAULT 0;
 
 -- =============================================================
 

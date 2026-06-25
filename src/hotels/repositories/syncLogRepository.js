@@ -32,4 +32,15 @@ async function completeSyncLog({ id, responseStatus, recordsProcessed, success, 
   if (error) throw error;
 }
 
-module.exports = { createSyncLog, completeSyncLog };
+async function getSyncLog(id) {
+  const { data, error } = await supabase
+    .from('hotels_sync_logs')
+    .select('id, success, error_message, completed_at, records_processed, started_at')
+    .eq('id', id)
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+module.exports = { createSyncLog, completeSyncLog, getSyncLog };

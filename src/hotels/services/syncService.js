@@ -36,8 +36,8 @@ async function runConcurrent(tasks, limit = 5) {
  * Fetch all cities from TripJack (cursor-paginated) and upsert into hotels_regions.
  * @param {'live'|'test'} [mode]
  */
-async function syncCities(mode) {
-  const logId = await createSyncLog({
+async function syncCities(mode, logId) {
+  logId = logId ?? await createSyncLog({
     supplier: 'tripjack',
     syncType: 'cities',
     requestUrl: ENDPOINTS.CITY_LIST,
@@ -88,8 +88,8 @@ async function syncCities(mode) {
  *                                   Use for incremental syncs. Omit for full sync.
  * @param {'NEW'|'UPDATE'} [type]    Default: 'NEW'
  */
-async function syncHotels(mode, lastUpdateTime, type = 'NEW') {
-  const logId = await createSyncLog({
+async function syncHotels(mode, lastUpdateTime, type = 'NEW', logId) {
+  logId = logId ?? await createSyncLog({
     supplier: 'tripjack',
     syncType: 'hotels',
     requestUrl: ENDPOINTS.HOTEL_MAPPING_SYNC,
@@ -161,11 +161,11 @@ async function syncHotels(mode, lastUpdateTime, type = 'NEW') {
  *                                  Defaults to 30 days ago if omitted.
  * @param {'live'|'test'} [mode]
  */
-async function syncDeletedHotels(lastUpdateTime, mode) {
+async function syncDeletedHotels(lastUpdateTime, mode, logId) {
   const since = lastUpdateTime
     ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19) + 'Z';
 
-  const logId = await createSyncLog({
+  logId = logId ?? await createSyncLog({
     supplier: 'tripjack',
     syncType: 'hotels_deleted',
     requestUrl: ENDPOINTS.HOTEL_DELETED_MAPPING_SYNC,
