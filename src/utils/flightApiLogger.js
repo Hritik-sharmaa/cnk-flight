@@ -25,7 +25,8 @@ const logger = require('./logger');
  * @param {string} [params.environment]       - production | uat | sandbox
  * @param {string} [params.createdBy]         - user email / id from calling app
  */
-const logFlightApiCall = async ({
+// Fire-and-forget — synchronous signature so callers in finally{} blocks don't await.
+const logFlightApiCall = ({
   provider,
   stage,
   endpoint,
@@ -44,30 +45,28 @@ const logFlightApiCall = async ({
   environment = null,
   createdBy = null,
 }) => {
-  try {
-    await supabase.from('flight_api_logs').insert({
-      provider,
-      stage,
-      endpoint,
-      http_method: httpMethod,
-      http_status: httpStatus,
-      request_payload: requestPayload,
-      response_payload: responsePayload,
-      request_headers: { apikey: '[redacted]', 'Content-Type': 'application/json' },
-      duration_ms: durationMs,
-      is_error: isError,
-      error_message: errorMessage,
-      correlation_id: correlationId,
-      provider_booking_id: providerBookingId,
-      flight_booking_id: flightBookingId,
-      quote_id: quoteId,
-      booking_id: bookingId,
-      environment: environment ?? deriveEnvironment(endpoint),
-      created_by: createdBy,
-    });
-  } catch (err) {
+  supabase.from('flight_api_logs').insert({
+    provider,
+    stage,
+    endpoint,
+    http_method: httpMethod,
+    http_status: httpStatus,
+    request_payload: requestPayload,
+    response_payload: responsePayload,
+    request_headers: { apikey: '[redacted]', 'Content-Type': 'application/json' },
+    duration_ms: durationMs,
+    is_error: isError,
+    error_message: errorMessage,
+    correlation_id: correlationId,
+    provider_booking_id: providerBookingId,
+    flight_booking_id: flightBookingId,
+    quote_id: quoteId,
+    booking_id: bookingId,
+    environment: environment ?? deriveEnvironment(endpoint),
+    created_by: createdBy,
+  }).then(undefined, (err) => {
     logger.error(`[flightApiLogger] insert failed (${stage}):`, err.message);
-  }
+  });
 };
 
 function deriveEnvironment(endpoint) {

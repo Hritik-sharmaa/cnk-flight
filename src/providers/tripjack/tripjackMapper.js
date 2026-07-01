@@ -82,7 +82,7 @@ function mapSearchResult(raw) {
   const result = raw.searchResult;
   if (!result) return raw;
 
-  const mapped = { raw };
+  const mapped = {};
   const trips = result.tripInfos || {};
 
   const mapTrip = (trip) => ({
