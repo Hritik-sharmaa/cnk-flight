@@ -281,6 +281,57 @@ All list responses use this consistent envelope:
 
 ---
 
+### Nationality Reference (`hotels_nationalities`)
+
+Synced from TripJack's `GET /hms/v3/nationality-info` (HMS service — single call, no pagination,
+returns every country). Confirms `countryId "106"` = India, matching the value already used in
+`scripts/testHotelBookFlow.js`.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/hotels/sync/nationalities` | Fetch the full list from TripJack and bulk-upsert into DB (fire-and-forget, poll via `/sync/status/:logId`) |
+| GET | `/api/v1/hotels/nationalities/search?q=india` | List/search nationalities for the agent selector (omit `q` for the full list, default first) |
+| POST | `/api/v1/hotels/nationalities` | Manually add/update a single entry (e.g. to (re)mark the default) |
+
+**Sync the full list:**
+```bash
+curl -s -X POST "http://localhost:3001/api/v1/hotels/sync/nationalities" \
+  -H "x-api-key: your-api-key" | jq
+# → { "data": { "logId": 4 } }
+
+curl -s "http://localhost:3001/api/v1/hotels/sync/status/4" \
+  -H "x-api-key: your-api-key" | jq
+# → { "data": { "status": "success", "recordsProcessed": 206 } }
+```
+
+> The bulk sync never touches `is_default` — it only inserts/updates `country_name`/`iso_code` for
+> existing rows, so re-running it can't silently change the agent selector's pre-selected nationality.
+
+**Manually set/change the default nationality:**
+```bash
+curl -s -X POST "http://localhost:3001/api/v1/hotels/nationalities" \
+  -H "x-api-key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "supplier_nationality_id": "106",
+    "country_name": "India",
+    "iso_code": "IN",
+    "is_default": true
+  }' | jq
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| supplier_nationality_id | string | Yes | TripJack's numeric country ID (`countryId` from nationality-info) |
+| country_name | string | Yes | Display name shown to agents |
+| iso_code | string | No | 2-letter ISO code (`code` from nationality-info) |
+| is_default | boolean | No | Marks this as the pre-selected nationality; unsets any previous default |
+
+> Only one nationality can be `is_default` at a time (enforced by a partial unique index).
+> No cron yet — like city/hotel sync, this is triggered manually via HTTP POST (see Known Issues).
+
+---
+
 ### Live Booking Flow
 
 | Step | Method | Path | Description |
@@ -743,7 +794,9 @@ Hotels synced before the city-matching fix may have `region_id = null`. The DB s
 Safe but wasteful. Future: compare `last_synced_at` and skip unchanged records.
 
 ### No cron schedule
-Sync is triggered manually via HTTP POST. For production, schedule the sync endpoints daily/weekly via a cron job or Supabase Edge Function.
+Sync (cities, hotels, nationalities) is triggered manually via HTTP POST. For production, schedule
+the sync endpoints via a cron job or Supabase Edge Function — nationalities change rarely, so a
+weekly/monthly schedule is more than enough; cities/hotels likely want daily.
 
 ### Hold booking confirm endpoint not yet wired
 TripJack's confirm-hold endpoint (`POST /oms/v3/hotel/confirm-book`) is not yet implemented. Currently only Instant Booking is fully end-to-end. Hold booking creates the hold; the confirm step needs to be added.

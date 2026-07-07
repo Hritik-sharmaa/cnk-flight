@@ -5,6 +5,7 @@ const logger = require('../../utils/logger');
 const { createSyncLog, completeSyncLog } = require('../repositories/syncLogRepository');
 const { upsertCities } = require('../repositories/cityRepository');
 const { upsertHotels, markHotelsDeleted } = require('../repositories/hotelRepository');
+const { bulkUpsertNationalities } = require('../repositories/nationalityRepository');
 
 function chunk(arr, size) {
   const result = [];
@@ -204,4 +205,41 @@ async function syncDeletedHotels(lastUpdateTime, mode, logId) {
   }
 }
 
-module.exports = { syncCities, syncHotels, syncDeletedHotels };
+/**
+ * Fetch the full nationality/country list from TripJack and upsert into
+ * hotels_nationalities. Single call, no pagination — the endpoint returns
+ * everything at once (see docs/HOTELS.md).
+ * @param {'live'|'test'} [mode]
+ */
+async function syncNationalities(mode, logId) {
+  logId = logId ?? await createSyncLog({
+    supplier: 'tripjack',
+    syncType: 'nationalities',
+    requestUrl: ENDPOINTS.NATIONALITY_LIST,
+    requestPayload: { mode },
+  });
+
+  try {
+    logger.info('[syncService] Fetching nationality list');
+
+    const res = await get(ENDPOINTS.NATIONALITY_LIST, {}, mode, 'hms');
+    const raw = res.nationalityInfos ?? [];
+
+    const mapped = raw.map((n) => ({
+      supplierNationalityId: String(n.countryId),
+      countryName: n.countryName ?? n.name,
+      isoCode: n.code ?? null,
+    }));
+
+    const count = await bulkUpsertNationalities(mapped);
+    logger.info(`[syncService] Nationality sync — fetched ${raw.length}, upserted ${count}`);
+
+    await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: count, success: true });
+    return { success: true, recordsProcessed: count };
+  } catch (err) {
+    await completeSyncLog({ id: logId, responseStatus: null, recordsProcessed: 0, success: false, errorMessage: err.message });
+    throw err;
+  }
+}
+
+module.exports = { syncCities, syncHotels, syncDeletedHotels, syncNationalities };

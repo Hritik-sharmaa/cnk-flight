@@ -516,3 +516,36 @@ ALTER TABLE public.virtual_accounts
 ALTER TABLE public.virtual_accounts
   ADD CONSTRAINT virtual_accounts_status_check
   CHECK (status IN ('active', 'expired', 'paid', 'paid_partial'));
+
+-- =============================================================
+
+-- 12. hotels_nationalities
+-- Reference list of supplier nationality/country IDs used in hotel live search,
+-- detail, and review requests (the `nationality` field). TripJack does not
+-- expose a documented "fetch nationality list" API, so this table is
+-- maintained manually via POST /api/v1/hotels/nationalities rather than a
+-- sync job. Seeded with the one ID confirmed by a working test booking.
+CREATE TABLE IF NOT EXISTS hotels_nationalities (
+    id                       BIGSERIAL PRIMARY KEY,
+
+    supplier                 VARCHAR(50)  NOT NULL DEFAULT 'tripjack',
+    supplier_nationality_id  VARCHAR(20)  NOT NULL,
+
+    country_name             TEXT         NOT NULL,
+    iso_code                 CHAR(2),
+
+    is_default               BOOLEAN      NOT NULL DEFAULT FALSE,
+
+    created_at               TIMESTAMP    DEFAULT NOW(),
+    updated_at               TIMESTAMP    DEFAULT NOW(),
+
+    UNIQUE (supplier, supplier_nationality_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hotels_nationalities_country_name
+    ON hotels_nationalities (country_name);
+
+-- Only one row may be the default nationality at a time
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hotels_nationalities_one_default
+    ON hotels_nationalities (supplier)
+    WHERE is_default = TRUE;

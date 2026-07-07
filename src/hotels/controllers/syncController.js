@@ -1,7 +1,7 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const response = require('../../utils/response');
 const logger = require('../../utils/logger');
-const { syncCities, syncHotels, syncDeletedHotels } = require('../services/syncService');
+const { syncCities, syncHotels, syncDeletedHotels, syncNationalities } = require('../services/syncService');
 const { createSyncLog, getSyncLog } = require('../repositories/syncLogRepository');
 const { ENDPOINTS } = require('../providers/tripjack/tripjackHotelConfig');
 
@@ -50,6 +50,17 @@ const triggerDeletedHotelSync = asyncHandler(async (req, res) => {
   return response(res, true, 202, 'Deleted hotel sync started', { logId });
 });
 
+const triggerNationalitySync = asyncHandler(async (req, res) => {
+  const mode = req.query.mode;
+  const logId = await createSyncLog({
+    supplier: 'tripjack', syncType: 'nationalities',
+    requestUrl: ENDPOINTS.NATIONALITY_LIST, requestPayload: { mode },
+  });
+  logger.info(`Nationality sync triggered [mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, logId=${logId}]`);
+  runInBackground('Nationality sync', () => syncNationalities(mode, logId));
+  return response(res, true, 202, 'Nationality sync started', { logId });
+});
+
 const getSyncStatus = asyncHandler(async (req, res) => {
   const { logId } = req.params;
   const log = await getSyncLog(logId);
@@ -69,4 +80,4 @@ const getSyncStatus = asyncHandler(async (req, res) => {
   return response(res, true, 200, 'Sync completed', { status: 'success', logId, recordsProcessed: log.records_processed });
 });
 
-module.exports = { triggerCitySync, triggerHotelSync, triggerDeletedHotelSync, getSyncStatus };
+module.exports = { triggerCitySync, triggerHotelSync, triggerDeletedHotelSync, triggerNationalitySync, getSyncStatus };

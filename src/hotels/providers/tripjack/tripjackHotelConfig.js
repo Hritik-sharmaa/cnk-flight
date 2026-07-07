@@ -29,6 +29,7 @@ const ENDPOINTS = {
   HOTEL_MAPPING_SYNC:        '/hms/v3/content/fetch-hotel-mapping-sync',       // POST — HMS type:NEW|UPDATE
   HOTEL_DELETED_MAPPING_SYNC: '/hms/v3/content/fetch-deleted-hotel-mapping',   // POST — HMS type:DELETE
   HOTEL_CONTENT:             '/hms/v3/content/fetch-hotel-content',            // POST — HMS (full content, max 100 IDs/req)
+  NATIONALITY_LIST:          '/hms/v3/nationality-info',                       // GET  — HMS (full nationality/country list, no pagination)
 
   // Booking flow (Steps 1–4)
   LISTING:             '/hms/v3/hotel/listing',                   // POST — HMS  (Step 1: Search)
