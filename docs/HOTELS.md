@@ -61,24 +61,25 @@ SUPABASE_SERVICE_ROLE_KEY=your_service_role_key_here
 # TripJack shared API key (used for all hotel endpoints)
 HOTEL_API_KEY=your_tripjack_api_key_here
 
-# HMS service — live search, pricing, review
+# HMS service — live search, pricing, review, static content, nationality
 HOTEL_HMS_API_BASE_URL_TEST=https://apitest-hms.tripjack.com
-HOTEL_HMS_API_BASE_URL_LIVE=https://hms.tripjack.com
+HOTEL_HMS_API_BASE_URL_LIVE=https://hms-search.tripjack.com
 
-# Static service — hotel/city inventory sync (same domain as flight)
+# Static service — hotel/city inventory sync (v3 production: same domain as HMS)
 HOTEL_STATIC_API_BASE_URL_TEST=https://apitest.tripjack.com
-HOTEL_STATIC_API_BASE_URL_LIVE=https://tripjack.com
+HOTEL_STATIC_API_BASE_URL_LIVE=https://hms-search.tripjack.com
 
 # Booker service — book, booking-details, cancel-booking
 HOTEL_BOOKER_API_BASE_URL_TEST=https://apitest-hotel-booker.tripjack.com
-HOTEL_BOOKER_API_BASE_URL_LIVE=https://hotel-booker.tripjack.com
+HOTEL_BOOKER_API_BASE_URL_LIVE=https://hms-booker.tripjack.com
 
 # Default API mode — 'test' in dev/staging, 'live' in production
 HOTEL_MODE=test
 ```
 
 > **Note:** `HOTEL_MODE=test` means you never need to pass `?mode=test` during local development.
-> The live booker URL should be confirmed from your TripJack partner portal.
+> Live URLs above are the v3 production URLs TripJack confirmed during certification (2026-07-07):
+> `hms-search.tripjack.com` for Static Content/Nationality/Search/Detail/Review, `hms-booker.tripjack.com` for Booking/Booking Detail/Cancellation.
 
 ---
 
@@ -639,6 +640,11 @@ curl -s -X POST "http://localhost:3001/api/v1/hotels/booking/details" \
 | `CANCELLED` | Terminal | Booking cancelled |
 
 > Poll every 5 seconds. Stop at any terminal status or after 180 seconds.
+
+> **Status sync:** Each poll writes TripJack's raw `order.status` back onto the matching `hotels_bookings` row
+> (matched by `supplier_booking_id`), except once the row has moved into `CANCELLATION_PENDING` / `CANCELLED` / `CANCEL_FAILED`.
+> An Instant Book only ever inserts `IN_PROGRESS` initially — the Book response confirms receipt, not confirmation —
+> so the stored status always reflects the last real supplier status, not a premature guess.
 
 ---
 

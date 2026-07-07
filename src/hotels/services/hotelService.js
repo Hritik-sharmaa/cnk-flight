@@ -228,9 +228,10 @@ async function hotelBookService(body) {
   logger.info(`[hotelService] hotelBook: bookingId=${data.bookingId}, status=${data.status?.success}`);
 
   const confirmedId = data.bookingId ?? bookingId;
-  const bookingStatus = bookingMode === 'INSTANT'
-    ? (data.status?.success ? 'SUCCESS' : 'FAILED')
-    : 'ON_HOLD';
+  // Book only confirms the request was received — TripJack takes up to 180s to
+  // actually confirm/reject it. Poll /booking/details (bookingDetailsService) to
+  // learn the real terminal status; don't mark INSTANT bookings SUCCESS here.
+  const bookingStatus = bookingMode === 'INSTANT' ? 'IN_PROGRESS' : 'ON_HOLD';
   const now = new Date().toISOString();
 
   // Fire-and-forget — each booking always gets its own fresh row (no upsert on supplier_booking_id
@@ -285,7 +286,23 @@ async function bookingDetailsService(body) {
 
   const data = await post(ENDPOINTS.BOOKING_DETAILS, body, undefined, 'booker');
 
-  logger.info(`[hotelService] bookingDetails: status=${data.order?.status ?? 'N/A'}`);
+  const rawStatus = data.order?.status;
+  logger.info(`[hotelService] bookingDetails: status=${rawStatus ?? 'N/A'}`);
+
+  // Reconcile our stored status with TripJack's real terminal status — the initial
+  // Book response only confirms the request was received, not the outcome. Never
+  // overwrite a booking that's already moved into post-booking cancellation states.
+  if (rawStatus) {
+    supabase
+      .from('hotels_bookings')
+      .update({ booking_status: rawStatus, updated_at: new Date().toISOString() })
+      .eq('supplier_booking_id', bookingId)
+      .not('booking_status', 'in', '(CANCELLATION_PENDING,CANCELLED,CANCEL_FAILED)')
+      .then(({ error }) => {
+        if (error) logger.error(`[hotelService] bookingDetails: DB status sync failed for ${bookingId}:`, error.message);
+        else logger.info(`[hotelService] bookingDetails: synced booking_status=${rawStatus} for ${bookingId}`);
+      });
+  }
 
   delete data.debug_curl;
   return data;

@@ -2,10 +2,10 @@
  * All TripJack hotel API constants in one place.
  * Import from here — never hardcode URLs or paths elsewhere.
  *
- * TripJack uses three separate services:
- *   HMS    — live search, pricing, review  (hms.tripjack.com)
- *   Static — hotel inventory sync          (tripjack.com)
- *   Booker — booking, details, cancel      (hotel-booker.tripjack.com)
+ * TripJack uses three separate services (v3 production URLs confirmed by TripJack):
+ *   HMS    — live search, pricing, review, static content, nationality  (hms-search.tripjack.com)
+ *   Static — hotel inventory sync                                       (hms-search.tripjack.com)
+ *   Booker — booking, details, cancel                                   (hms-booker.tripjack.com)
  */
 
 const BASE_URLS = {
