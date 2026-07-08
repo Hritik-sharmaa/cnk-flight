@@ -19,6 +19,11 @@ const errorHandler = (err, req, res, _next) => {
     });
   }
 
+  // Axios timeout (no response ever received from the provider)
+  if (err.code === 'ECONNABORTED' && /timeout/i.test(err.message)) {
+    return response(res, false, 504, 'Flight search is taking longer than usual. Please try again.');
+  }
+
   // Supabase unique violation (23505)
   if (err.code === '23505') {
     logger.warn(`Supabase unique violation: ${err.message}`);

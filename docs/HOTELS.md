@@ -604,7 +604,7 @@ curl -s -X POST "http://localhost:3001/api/v1/hotels/book" \
     "type": "HOTEL",
     "roomTravellerInfo": [
       {
-        "travelerInfo": [
+        "travellerInfo": [
           { "ti": "Mr", "pt": "ADULT", "fN": "Rahul", "lN": "Sharma" },
           { "ti": "Mrs", "pt": "ADULT", "fN": "Priya", "lN": "Sharma" }
         ]
@@ -632,7 +632,7 @@ curl -s -X POST "http://localhost:3001/api/v1/hotels/book" \
     "type": "HOTEL",
     "roomTravellerInfo": [
       {
-        "travelerInfo": [
+        "travellerInfo": [
           { "ti": "Mr", "pt": "ADULT", "fN": "Rahul", "lN": "Sharma" }
         ]
       }
@@ -650,12 +650,12 @@ curl -s -X POST "http://localhost:3001/api/v1/hotels/book" \
 | bookingId | string | Yes | From Step 3 Review |
 | type | string | Yes | Always `"HOTEL"` |
 | roomTravellerInfo | array | Yes | One entry per room, same order as search |
-| travelerInfo[].ti | string | Yes | Title: `Mr` `Mrs` `Ms` `Miss` `Master` |
-| travelerInfo[].pt | string | Yes | `ADULT` or `CHILD` |
-| travelerInfo[].fN | string | Yes | First name (unique across rooms for lead guest) |
-| travelerInfo[].lN | string | Yes | Last name |
-| travelerInfo[].pan | string | Conditional | Required when `panRequired: true` in Review |
-| travelerInfo[].pNum | string | Conditional | Passport number — required for international hotels |
+| travellerInfo[].ti | string | Yes | Title: `Mr` `Mrs` `Ms` `Miss` `Master` |
+| travellerInfo[].pt | string | Yes | `ADULT` or `CHILD` |
+| travellerInfo[].fN | string | Yes | First name (unique across rooms for lead guest) |
+| travellerInfo[].lN | string | Yes | Last name |
+| travellerInfo[].pan | string | Conditional | Required when `panRequired: true` in Review |
+| travellerInfo[].pNum | string | Conditional | Passport number — required for international hotels |
 | deliveryInfo.emails | array | Yes | Confirmation email addresses |
 | deliveryInfo.contacts | array | Yes | Contact phone numbers |
 | deliveryInfo.code | array | No | Dialing codes matching each contact |
