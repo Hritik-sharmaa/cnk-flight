@@ -549,3 +549,29 @@ CREATE INDEX IF NOT EXISTS idx_hotels_nationalities_country_name
 CREATE UNIQUE INDEX IF NOT EXISTS idx_hotels_nationalities_one_default
     ON hotels_nationalities (supplier)
     WHERE is_default = TRUE;
+
+-- =============================================================
+
+-- 13. flights_sync_logs
+-- Audit trail for the nightly Delhi-origin indicative flight price sync
+-- (writes directly into cnk-website's `departures.flight_price_del` /
+-- `flight_price_updated_at` columns, in the same Supabase project).
+-- Mirrors hotels_sync_logs exactly.
+CREATE TABLE IF NOT EXISTS flights_sync_logs (
+    id                  BIGSERIAL PRIMARY KEY,
+    supplier            VARCHAR(50),
+    sync_type           VARCHAR(50),
+    request_url         TEXT,
+    request_payload     JSONB,
+    response_payload    JSONB,
+    response_status     INT,
+    records_processed   INT     DEFAULT 0,
+    success             BOOLEAN,
+    error_message       TEXT,
+    started_at          TIMESTAMP,
+    completed_at        TIMESTAMP,
+    created_at          TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_flights_sync_logs_created
+    ON flights_sync_logs (created_at);
