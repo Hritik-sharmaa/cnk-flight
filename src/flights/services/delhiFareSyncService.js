@@ -9,7 +9,11 @@ const {
 const { resolveDestinationAirports, resolveTravelDates } = require('../utils/airportResolver');
 
 const DELHI_CODE = 'DEL';
-const CONCURRENCY = 3; // bounded — one live provider search per package
+// Shared across every departure-level search in a page (see syncDelhiFaresPage) —
+// deliberately not "per package", since some packages have a dozen-plus
+// departures tied at the cheapest land price and trapping those behind one
+// serialized worker slot starves the other slots while they wait.
+const CONCURRENCY = 8;
 
 /**
  * Run async tasks with a concurrency cap. Same shape as hotels' syncService
@@ -117,45 +121,18 @@ async function syncDepartureDelhiFare(pkg, departure, outboundCode, returnFromCo
 }
 
 /**
- * Fetches and writes a DEL-origin fare for every one of a package's active
- * departures tied at the cheapest land price — not just one arbitrarily
- * picked row. Read-path "starting price" logic can land on any of these
- * tied departures depending on request-to-request ordering, so all of them
- * need their own flight price or the badge/price shown becomes inconsistent
- * between page loads. Returns the count of departures successfully updated.
- */
-async function syncPackageDelhiFare(pkg) {
-  const isFIT = pkg.package_type === 'FIT';
-
-  const departures = await getCheapestActiveDepartures(pkg.id, isFIT);
-  if (departures.length === 0) {
-    logger.info(`[delhiFareSync] ${pkg.slug} — no active departure, skipping`);
-    return 0;
-  }
-
-  const { outboundCode, returnFromCode } = resolveDestinationAirports({
-    destination: pkg.destination,
-    tourRoute: pkg.tour_route,
-    country: pkg.country,
-  });
-
-  if (!outboundCode) {
-    logger.warn(`[delhiFareSync] ${pkg.slug} — destination airport unresolvable, skipping`);
-    return 0;
-  }
-
-  let updated = 0;
-  for (const departure of departures) {
-    const wrote = await syncDepartureDelhiFare(pkg, departure, outboundCode, returnFromCode);
-    if (wrote) updated++;
-  }
-  return updated;
-}
-
-/**
  * Processes one cursor-paginated page of includes_flight packages.
+ *
+ * Resolution (DB-only, cheap) happens per package first: which departures
+ * tie at the cheapest land price, and which airport that package resolves
+ * to. Every resulting (package, departure) pair is then flattened into one
+ * shared task list and run through a single concurrency pool — a package
+ * with a dozen tied departures no longer occupies one serialized worker
+ * slot for a dozen searches while other slots sit idle.
+ *
  * Returns { done, nextCursor, processed, updated, skipped } for the
- * controller/workflow to loop on.
+ * controller/workflow to loop on. `processed`/`skipped` count packages;
+ * `updated` counts individual departures written.
  */
 async function syncDelhiFaresPage({ cursor = null, limit = 25 } = {}) {
   const packages = await getFlightIncludedPackages({ afterId: cursor, limit });
@@ -164,25 +141,58 @@ async function syncDelhiFaresPage({ cursor = null, limit = 25 } = {}) {
     return { done: true, nextCursor: null, processed: 0, updated: 0, skipped: 0 };
   }
 
-  const tasks = packages.map((pkg) => async () => {
-    try {
-      return await syncPackageDelhiFare(pkg);
-    } catch (err) {
-      logger.error(`[delhiFareSync] ${pkg.slug ?? pkg.id} — unexpected error: ${err.message}`);
-      return 0;
-    }
-  });
+  let skipped = 0;
+  const searchTasks = [];
 
-  const results = await runConcurrent(tasks);
-  const updated = results.reduce((sum, count) => sum + count, 0);
-  const packagesWithNoUpdate = results.filter((count) => count === 0).length;
+  for (const pkg of packages) {
+    const isFIT = pkg.package_type === 'FIT';
+
+    let departures;
+    try {
+      departures = await getCheapestActiveDepartures(pkg.id, isFIT);
+    } catch (err) {
+      logger.error(`[delhiFareSync] ${pkg.slug ?? pkg.id} — failed to load departures: ${err.message}`);
+      skipped++;
+      continue;
+    }
+
+    if (departures.length === 0) {
+      logger.info(`[delhiFareSync] ${pkg.slug} — no active departure, skipping`);
+      skipped++;
+      continue;
+    }
+
+    const { outboundCode, returnFromCode } = resolveDestinationAirports({
+      destination: pkg.destination,
+      tourRoute: pkg.tour_route,
+      country: pkg.country,
+    });
+
+    if (!outboundCode) {
+      logger.warn(`[delhiFareSync] ${pkg.slug} — destination airport unresolvable, skipping`);
+      skipped++;
+      continue;
+    }
+
+    for (const departure of departures) {
+      searchTasks.push(() =>
+        syncDepartureDelhiFare(pkg, departure, outboundCode, returnFromCode).catch((err) => {
+          logger.error(`[delhiFareSync] ${pkg.slug} departure ${departure.id} — unexpected error: ${err.message}`);
+          return false;
+        }),
+      );
+    }
+  }
+
+  const results = await runConcurrent(searchTasks);
+  const updated = results.filter(Boolean).length;
 
   return {
     done: packages.length < limit,
     nextCursor: packages[packages.length - 1].id,
     processed: packages.length,
     updated,
-    skipped: packagesWithNoUpdate,
+    skipped,
   };
 }
 
