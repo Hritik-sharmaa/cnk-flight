@@ -3,7 +3,7 @@ const flightService = require('../../services/flightService');
 const { createSyncLog, completeSyncLog } = require('../repositories/syncLogRepository');
 const {
   getFlightIncludedPackages,
-  getCheapestActiveDeparture,
+  getCheapestActiveDepartures,
   writeDelhiFare,
 } = require('../repositories/departureFareRepository');
 const { resolveDestinationAirports, resolveTravelDates } = require('../utils/airportResolver');
@@ -64,32 +64,14 @@ function pickCheapestRoundTripFare(searchResult) {
 }
 
 /**
- * Fetches and writes the cheapest DEL-origin round-trip fare for a single
- * package's cheapest active departure. Never throws for expected failure
- * modes (unresolvable airport, no fares, provider error) — those are logged
- * and the existing cached value (if any) is left untouched. Returns true if
- * a fare was written, false otherwise.
+ * Fetches and writes the cheapest DEL-origin round-trip fare for one
+ * specific departure (its own dates — fares vary by date, so a fare fetched
+ * for one departure cannot be copied onto another even if they share the
+ * same land price). Never throws for expected failure modes (no fares,
+ * provider error) — those are logged and the existing cached value (if any)
+ * is left untouched. Returns true if a fare was written, false otherwise.
  */
-async function syncPackageDelhiFare(pkg) {
-  const isFIT = pkg.package_type === 'FIT';
-
-  const departure = await getCheapestActiveDeparture(pkg.id, isFIT);
-  if (!departure) {
-    logger.info(`[delhiFareSync] ${pkg.slug} — no active departure, skipping`);
-    return false;
-  }
-
-  const { outboundCode, returnFromCode } = resolveDestinationAirports({
-    destination: pkg.destination,
-    tourRoute: pkg.tour_route,
-    country: pkg.country,
-  });
-
-  if (!outboundCode) {
-    logger.warn(`[delhiFareSync] ${pkg.slug} — destination airport unresolvable, skipping`);
-    return false;
-  }
-
+async function syncDepartureDelhiFare(pkg, departure, outboundCode, returnFromCode) {
   const { departureDateStr, returnDateStr } = resolveTravelDates({
     departure,
     tourRoute: pkg.tour_route,
@@ -119,19 +101,55 @@ async function syncPackageDelhiFare(pkg) {
   try {
     searchResult = await flightService.search(searchQuery);
   } catch (err) {
-    logger.error(`[delhiFareSync] ${pkg.slug} — provider search failed: ${err.message}`);
+    logger.error(`[delhiFareSync] ${pkg.slug} departure ${departure.id} — provider search failed: ${err.message}`);
     return false;
   }
 
   const cheapestFare = pickCheapestRoundTripFare(searchResult);
   if (cheapestFare === null) {
-    logger.info(`[delhiFareSync] ${pkg.slug} — no fares found for DEL → ${outboundCode}, skipping`);
+    logger.info(`[delhiFareSync] ${pkg.slug} departure ${departure.id} — no fares found for DEL → ${outboundCode}, skipping`);
     return false;
   }
 
   await writeDelhiFare(departure.id, cheapestFare);
   logger.info(`[delhiFareSync] ${pkg.slug} — wrote flight_price_del=${cheapestFare} on departure ${departure.id}`);
   return true;
+}
+
+/**
+ * Fetches and writes a DEL-origin fare for every one of a package's active
+ * departures tied at the cheapest land price — not just one arbitrarily
+ * picked row. Read-path "starting price" logic can land on any of these
+ * tied departures depending on request-to-request ordering, so all of them
+ * need their own flight price or the badge/price shown becomes inconsistent
+ * between page loads. Returns the count of departures successfully updated.
+ */
+async function syncPackageDelhiFare(pkg) {
+  const isFIT = pkg.package_type === 'FIT';
+
+  const departures = await getCheapestActiveDepartures(pkg.id, isFIT);
+  if (departures.length === 0) {
+    logger.info(`[delhiFareSync] ${pkg.slug} — no active departure, skipping`);
+    return 0;
+  }
+
+  const { outboundCode, returnFromCode } = resolveDestinationAirports({
+    destination: pkg.destination,
+    tourRoute: pkg.tour_route,
+    country: pkg.country,
+  });
+
+  if (!outboundCode) {
+    logger.warn(`[delhiFareSync] ${pkg.slug} — destination airport unresolvable, skipping`);
+    return 0;
+  }
+
+  let updated = 0;
+  for (const departure of departures) {
+    const wrote = await syncDepartureDelhiFare(pkg, departure, outboundCode, returnFromCode);
+    if (wrote) updated++;
+  }
+  return updated;
 }
 
 /**
@@ -151,19 +169,20 @@ async function syncDelhiFaresPage({ cursor = null, limit = 25 } = {}) {
       return await syncPackageDelhiFare(pkg);
     } catch (err) {
       logger.error(`[delhiFareSync] ${pkg.slug ?? pkg.id} — unexpected error: ${err.message}`);
-      return false;
+      return 0;
     }
   });
 
   const results = await runConcurrent(tasks);
-  const updated = results.filter(Boolean).length;
+  const updated = results.reduce((sum, count) => sum + count, 0);
+  const packagesWithNoUpdate = results.filter((count) => count === 0).length;
 
   return {
     done: packages.length < limit,
     nextCursor: packages[packages.length - 1].id,
     processed: packages.length,
     updated,
-    skipped: packages.length - updated,
+    skipped: packagesWithNoUpdate,
   };
 }
 

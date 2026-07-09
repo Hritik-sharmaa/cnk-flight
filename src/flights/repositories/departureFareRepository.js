@@ -26,12 +26,17 @@ async function getFlightIncludedPackages({ afterId = null, limit = 25 } = {}) {
 }
 
 /**
- * The cheapest active/upcoming departure for a package — same selection rule
- * cnk-website's attachStartingPrices()/fetchDeparturesBySlugDirect() use:
- * min price_adult_double among active, non-past departures (validity-period
- * FIT departures are matched on end_date instead of start_date).
+ * All active/upcoming departures for a package tied at the cheapest
+ * price_adult_double — same selection rule cnk-website's
+ * attachStartingPrices()/fetchDeparturesBySlugDirect() use to pick "the"
+ * starting-price departure (validity-period FIT departures are matched on
+ * end_date instead of start_date), except when several departures share
+ * that exact cheapest price, every one of them is returned rather than an
+ * arbitrary single row. Read-path "starting price" logic picks whichever of
+ * these it likes on any given request, so all of them need their own
+ * (date-specific) flight price, not a copy of one another's.
  */
-async function getCheapestActiveDeparture(packageId, isFIT) {
+async function getCheapestActiveDepartures(packageId, isFIT) {
   const today = new Date().toISOString().split('T')[0];
 
   let query = supabase
@@ -41,14 +46,16 @@ async function getCheapestActiveDeparture(packageId, isFIT) {
     .eq('is_active', true)
     .eq('is_validity_period', Boolean(isFIT))
     .not('price_adult_double', 'is', null)
-    .order('price_adult_double', { ascending: true })
-    .limit(1);
+    .order('price_adult_double', { ascending: true });
 
   query = isFIT ? query.gte('end_date', today) : query.gte('start_date', today);
 
   const { data, error } = await query;
   if (error) throw error;
-  return data?.[0] ?? null;
+  if (!data?.length) return [];
+
+  const cheapest = data[0].price_adult_double;
+  return data.filter((d) => d.price_adult_double === cheapest);
 }
 
 async function writeDelhiFare(departureId, fareAmount) {
@@ -63,4 +70,4 @@ async function writeDelhiFare(departureId, fareAmount) {
   if (error) throw error;
 }
 
-module.exports = { getFlightIncludedPackages, getCheapestActiveDeparture, writeDelhiFare };
+module.exports = { getFlightIncludedPackages, getCheapestActiveDepartures, writeDelhiFare };
