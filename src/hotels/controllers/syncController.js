@@ -3,6 +3,7 @@ const response = require('../../utils/response');
 const logger = require('../../utils/logger');
 const { syncCities, syncHotels, syncDeletedHotels, syncNationalities } = require('../services/syncService');
 const { createSyncLog, getSyncLog } = require('../repositories/syncLogRepository');
+const { purgeExpiredDetailCache } = require('../repositories/hotelRepository');
 const { ENDPOINTS } = require('../providers/tripjack/tripjackHotelConfig');
 
 function runInBackground(label, fn) {
@@ -61,6 +62,15 @@ const triggerNationalitySync = asyncHandler(async (req, res) => {
   return response(res, true, 202, 'Nationality sync started', { logId });
 });
 
+// Deletes hotel_details_cache rows older than 24h. No TripJack calls — pure
+// DB cleanup, so it runs synchronously and returns the count directly rather
+// than the fire-and-forget + poll pattern used by the sync jobs above.
+const purgeDetailCache = asyncHandler(async (req, res) => {
+  const deletedCount = await purgeExpiredDetailCache();
+  logger.info(`[syncController] Purged ${deletedCount} expired hotel_details_cache rows`);
+  return response(res, true, 200, 'Expired detail cache purged', { deletedCount });
+});
+
 const getSyncStatus = asyncHandler(async (req, res) => {
   const { logId } = req.params;
   const log = await getSyncLog(logId);
@@ -80,4 +90,4 @@ const getSyncStatus = asyncHandler(async (req, res) => {
   return response(res, true, 200, 'Sync completed', { status: 'success', logId, recordsProcessed: log.records_processed });
 });
 
-module.exports = { triggerCitySync, triggerHotelSync, triggerDeletedHotelSync, triggerNationalitySync, getSyncStatus };
+module.exports = { triggerCitySync, triggerHotelSync, triggerDeletedHotelSync, triggerNationalitySync, purgeDetailCache, getSyncStatus };

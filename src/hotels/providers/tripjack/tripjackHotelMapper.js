@@ -27,33 +27,29 @@ function mapCity(raw) {
 }
 
 /**
- * Maps a hotel object from fetch-hotel-content (V3 Static Content API).
+ * Both fetch-hotel-content (batch, up to 100 hotels) and static-detail
+ * (single hotel) return the identical per-hotel response shape:
  *
- * Response structure:
  *   tjHotelId, unicaId, name, is_active, star_rating,
  *   property_type: { id, name },
  *   locale: { address: { fulladdr, city, statename, countryname, countrycode, postal_code },
  *             coordinates: { lat, long }, phone: [] },
  *   amenities: { "0": { id, name }, "1": ... },  ← object with numeric keys
  *   images: [{ is_hero_image, links: { XXL: { href } } }],
- *   descriptions: { default, amenities, dining, location, ... }
+ *   descriptions: { default, amenities, dining, location, ... },
+ *   rooms: { "0": { id, name, ... }, ... },
+ *   policies: { checkInCheckOut, instructions, ... },
+ *   chain: { id, name }
+ *
+ * toLightweightRow() extracts only what's needed to search/browse (small,
+ * synced for the whole catalogue). toDetailCache() extracts the heavy stuff
+ * (images, amenities, descriptions, rooms, policies) — only ever persisted
+ * per-hotel, on demand, into the 24h-purged hotel_details_cache table.
  */
-function mapHotel(raw) {
-  const locale   = raw.locale ?? {};
-  const addr     = locale.address ?? {};
-  const coords   = locale.coordinates ?? {};
-  const phones   = Array.isArray(locale.phone) ? locale.phone : [];
 
-  // amenities is an object with numeric keys, not an array
-  const amenitiesObj = raw.amenities ?? {};
-  const facilities = Object.values(amenitiesObj).map((f) => ({
-    facilityCode: String(f.id ?? ''),
-    facilityType: null,
-    facilityName: f.name ?? '',
-  }));
-
+function extractImages(raw) {
   // images: each entry has links.{SIZE}.href
-  const images = (raw.images ?? [])
+  return (raw.images ?? [])
     .map((img, i) => {
       const links = img.links ?? {};
       // prefer XXL, fall back to first available size
@@ -68,35 +64,60 @@ function mapHotel(raw) {
       };
     })
     .filter(Boolean);
+}
+
+function extractHeroImageUrl(images) {
+  return (images.find((img) => img.isHeroImage) ?? images[0])?.imageUrl ?? null;
+}
+
+function toLightweightRow(raw) {
+  const locale = raw.locale ?? {};
+  const addr   = locale.address ?? {};
+  const coords = locale.coordinates ?? {};
+  const phones = Array.isArray(locale.phone) ? locale.phone : [];
+  const images = extractImages(raw);
 
   return {
-    hotel: {
-      supplier:        'tripjack',
-      supplierHotelId: String(raw.tjHotelId ?? ''),
-      unicaId:         raw.unicaId ? String(raw.unicaId) : null,
-      name:            raw.name ?? '',
-      slug:            slugify(raw.name),
-      propertyType:    raw.property_type?.name ?? raw.property_type?.id ?? null,
-      description:     raw.descriptions ?? null,
-      rating:          raw.star_rating != null ? parseFloat(raw.star_rating) : null,
-      isDeleted:       raw.is_active === false,
-      addressLine:     addr.fulladdr ?? addr.line_1 ?? null,
-      postalCode:      addr.postal_code ?? null,
-      cityName:        addr.city ?? null,
-      stateName:       addr.statename ?? null,
-      countryName:     addr.countryname ?? null,
-      countryCode:     addr.countrycode ?? null,
-      latitude:        coords.lat  != null ? parseFloat(coords.lat)  : null,
-      longitude:       coords.long != null ? parseFloat(coords.long) : null,
-      contactPhone:    phones[0] ?? null,
-      contactEmail:    null,
-      contactFax:      null,
-      website:         null,
-      rawData:         raw,
-    },
-    images,
-    facilities,
+    supplier:        'tripjack',
+    supplierHotelId: String(raw.tjHotelId ?? ''),
+    unicaId:         raw.unicaId ? String(raw.unicaId) : null,
+    name:            raw.name ?? '',
+    slug:            slugify(raw.name),
+    propertyType:    raw.property_type?.name ?? raw.property_type?.id ?? null,
+    rating:          raw.star_rating != null ? parseFloat(raw.star_rating) : null,
+    isDeleted:       raw.is_active === false,
+    addressLine:     addr.fulladdr ?? addr.line_1 ?? null,
+    postalCode:      addr.postal_code ?? null,
+    cityName:        addr.city ?? null,
+    stateName:       addr.statename ?? null,
+    countryName:     addr.countryname ?? null,
+    countryCode:     addr.countrycode ?? null,
+    latitude:        coords.lat  != null ? parseFloat(coords.lat)  : null,
+    longitude:       coords.long != null ? parseFloat(coords.long) : null,
+    contactPhone:    phones[0] ?? null,
+    heroImageUrl:    extractHeroImageUrl(images),
   };
 }
 
-module.exports = { mapCity, mapHotel };
+function toDetailCache(raw) {
+  const images = extractImages(raw);
+
+  // amenities is an object with numeric keys, not an array
+  const amenitiesObj = raw.amenities ?? {};
+  const facilities = Object.values(amenitiesObj).map((f) => ({
+    facilityCode: String(f.id ?? ''),
+    facilityType: null,
+    facilityName: f.name ?? '',
+  }));
+
+  return {
+    images,
+    facilities,
+    descriptions: raw.descriptions ?? null,
+    rooms:        raw.rooms ?? null,
+    policies:     raw.policies ?? null,
+    chain:        raw.chain ?? null,
+  };
+}
+
+module.exports = { mapCity, toLightweightRow, toDetailCache };

@@ -4,6 +4,7 @@ const logger = require('../../utils/logger');
 const {
   searchHotelsService,
   getHotelByIdService,
+  getHotelByTripjackIdService,
   liveSearchHotelsService,
   hotelDetailService,
   hotelReviewService,
@@ -46,6 +47,25 @@ const getHotelById = asyncHandler(async (req, res) => {
   }
 
   logger.info(`Hotel detail fetched for id=${id}`);
+
+  return response(res, true, 200, 'Hotel fetched successfully', { hotel });
+});
+
+// ─── DB: single hotel by TripJack hotel ID ───────────────────────────────────
+// Used when a hotel comes from live search results (which carry tjHotelId,
+// not an internal id) and may not have a hotels_inventory row yet.
+
+const getHotelByTripjackId = asyncHandler(async (req, res) => {
+  const { hid } = req.params;
+
+  const hotel = await getHotelByTripjackIdService(hid);
+
+  if (!hotel) {
+    logger.warn(`Hotel not found for hid=${hid}`);
+    return response(res, false, 404, 'Hotel not found');
+  }
+
+  logger.info(`Hotel detail fetched for hid=${hid}`);
 
   return response(res, true, 200, 'Hotel fetched successfully', { hotel });
 });
@@ -127,6 +147,7 @@ const cancelBooking = asyncHandler(async (req, res) => {
 module.exports = {
   searchHotels,
   getHotelById,
+  getHotelByTripjackId,
   liveSearchHotels,
   hotelDetail,
   hotelReview,

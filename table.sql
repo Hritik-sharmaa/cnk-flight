@@ -219,54 +219,49 @@ SET search_vector =
     setweight(to_tsvector('simple', COALESCE(property_type, '')), 'D')
 WHERE search_vector IS NULL;
 
--- =============================================================
+-- hotels_inventory now holds lightweight/searchable fields only. Heavy
+-- per-hotel content (images, amenities, descriptions, rooms, policies)
+-- moved to hotel_details_cache below, fetched on demand and purged after
+-- 24h — it no longer lives permanently on the inventory row.
+ALTER TABLE hotels_inventory
+    ADD COLUMN IF NOT EXISTS hero_image_url TEXT;
 
--- 3. hotels_images
-CREATE TABLE IF NOT EXISTS hotels_images (
-    id          BIGSERIAL PRIMARY KEY,
-
-    hotel_id    BIGINT REFERENCES hotels_inventory (id) ON DELETE CASCADE,
-
-    image_url      TEXT NOT NULL,
-    image_size     VARCHAR(50),
-    is_hero_image  BOOLEAN DEFAULT FALSE,
-    sort_order     INT DEFAULT 0,
-
-    created_at     TIMESTAMP DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_hotels_images_hotel
-    ON hotels_images (hotel_id);
-
--- Migrations: add columns if the table already exists without them
-ALTER TABLE hotels_images
-    ADD COLUMN IF NOT EXISTS image_size     VARCHAR(50),
-    ADD COLUMN IF NOT EXISTS is_hero_image  BOOLEAN DEFAULT FALSE,
-    ADD COLUMN IF NOT EXISTS sort_order     INT DEFAULT 0;
+ALTER TABLE hotels_inventory DROP COLUMN IF EXISTS raw_data;
+ALTER TABLE hotels_inventory DROP COLUMN IF EXISTS description;
 
 -- =============================================================
 
--- 4. hotels_facilities
-CREATE TABLE IF NOT EXISTS hotels_facilities (
-    id              BIGSERIAL PRIMARY KEY,
+-- 3. hotel_details_cache
+-- Heavy per-hotel static content (images, amenities, descriptions, rooms,
+-- policies, chain), fetched from TripJack's static-detail API only when a
+-- hotel is actually opened, and purged by a daily cron once cached_at is
+-- older than 24h (see purgeExpiredDetailCache / POST /sync/purge-detail-cache).
+-- One row per hotel that's been viewed in the last 24h — not the whole catalogue.
+CREATE TABLE IF NOT EXISTS hotel_details_cache (
+    id            BIGSERIAL PRIMARY KEY,
 
-    hotel_id        BIGINT REFERENCES hotels_inventory (id) ON DELETE CASCADE,
+    hotel_id      BIGINT NOT NULL REFERENCES hotels_inventory (id) ON DELETE CASCADE,
 
-    facility_code   VARCHAR(100),
-    facility_type   VARCHAR(100),
-    facility_name   TEXT,
+    detail_cache  JSONB NOT NULL,
 
-    created_at      TIMESTAMP DEFAULT NOW()
+    cached_at     TIMESTAMP DEFAULT NOW(),
+
+    UNIQUE (hotel_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_hotels_facilities_hotel
-    ON hotels_facilities (hotel_id);
+CREATE INDEX IF NOT EXISTS idx_hotel_details_cache_hotel
+    ON hotel_details_cache (hotel_id);
 
--- Migrations: add columns if the table already exists without them
-ALTER TABLE hotels_facilities
-    ADD COLUMN IF NOT EXISTS facility_code  VARCHAR(100),
-    ADD COLUMN IF NOT EXISTS facility_type  VARCHAR(100),
-    ADD COLUMN IF NOT EXISTS facility_name  TEXT;
+CREATE INDEX IF NOT EXISTS idx_hotel_details_cache_cached
+    ON hotel_details_cache (cached_at);
+
+-- Replaced by hotel_details_cache — a single JSONB blob per viewed hotel,
+-- purged after 24h, instead of permanent per-image/per-facility rows for
+-- every hotel in the catalogue (this was the single largest source of the
+-- 2026-07 Supabase disk-IO crisis: 2.67GB in hotels_images + 544MB in
+-- hotels_facilities, populated by a weekly full-catalogue bulk sync).
+DROP TABLE IF EXISTS hotels_images;
+DROP TABLE IF EXISTS hotels_facilities;
 
 -- =============================================================
 

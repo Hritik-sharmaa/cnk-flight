@@ -1,10 +1,10 @@
 const { get, post } = require('../providers/tripjack/tripjackHotelClient');
 const { ENDPOINTS, PAGINATION } = require('../providers/tripjack/tripjackHotelConfig');
-const { mapCity, mapHotel } = require('../providers/tripjack/tripjackHotelMapper');
+const { mapCity, toLightweightRow } = require('../providers/tripjack/tripjackHotelMapper');
 const logger = require('../../utils/logger');
 const { createSyncLog, completeSyncLog } = require('../repositories/syncLogRepository');
 const { upsertCities } = require('../repositories/cityRepository');
-const { upsertHotels, markHotelsDeleted } = require('../repositories/hotelRepository');
+const { upsertHotelIndex, markHotelsDeleted } = require('../repositories/hotelRepository');
 const { bulkUpsertNationalities } = require('../repositories/nationalityRepository');
 
 function chunk(arr, size) {
@@ -57,7 +57,7 @@ async function syncCities(mode, logId) {
 
       logger.info(`[syncService] Fetching city page ${page} (cursor: ${cursor ?? 'first'})`);
 
-      const res = await get(ENDPOINTS.CITY_LIST, params, mode, 'hms');
+      const res = await get(ENDPOINTS.CITY_LIST, params, mode, 'hms', 'hotel-sync');
 
       const raw = res.hotelCityRegionIds ?? [];
       const mapped = raw.map(mapCity);
@@ -80,9 +80,18 @@ async function syncCities(mode, logId) {
 }
 
 /**
- * Sync hotels using the V3 Static Content API (2-step process):
+ * Sync the lightweight hotel index (name/city/rating/hero image only — no
+ * images array, amenities, descriptions, rooms, or policies) using the V3
+ * Static Content API (2-step process):
  *   Step 1 — fetch-hotel-mapping-sync  → paginate to collect all tjHotelIds (2000/page)
- *   Step 2 — fetch-hotel-content       → fetch full details in batches of 100
+ *   Step 2 — fetch-hotel-content       → fetch full content in batches of 100,
+ *                                        but only the lightweight projection
+ *                                        (toLightweightRow) is persisted —
+ *                                        the heavy fields are fetched and
+ *                                        discarded here. Full detail is only
+ *                                        ever cached per-hotel, on demand,
+ *                                        when a user opens that hotel
+ *                                        (see hotelService.getHotelDetailService).
  *
  * @param {'live'|'test'} [mode]
  * @param {string} [lastUpdateTime]  ISO 8601 — only sync hotels updated after this time.
@@ -112,7 +121,7 @@ async function syncHotels(mode, lastUpdateTime, type = 'NEW', logId) {
 
       logger.info(`[syncService] Mapping page ${mappingPage} (cursor: ${nextCursor ?? 'first'})`);
 
-      const mappingRes = await post(ENDPOINTS.HOTEL_MAPPING_SYNC, mappingBody, mode, 'hms');
+      const mappingRes = await post(ENDPOINTS.HOTEL_MAPPING_SYNC, mappingBody, mode, 'hms', 1, 'hotel-sync');
       const hotelIds = (mappingRes.hotels ?? []).map((h) => String(h.tjHotelId));
 
       if (hotelIds.length === 0) {
@@ -123,15 +132,16 @@ async function syncHotels(mode, lastUpdateTime, type = 'NEW', logId) {
       const pageable = mappingRes.pageable ?? {};
       logger.info(`[syncService] Mapping page ${mappingPage} — ${hotelIds.length} IDs (total: ${pageable.totalElements ?? '?'})`);
 
-      // ── Step 2: fetch full content — 5 batches of 100 concurrently ─────
+      // ── Step 2: fetch content — 5 batches of 100 concurrently, keep only
+      //            the lightweight projection ────────────────────────────
       const batches = chunk(hotelIds, PAGINATION.HOTEL_CONTENT_SIZE);
       logger.info(`[syncService] Mapping page ${mappingPage} — ${batches.length} content batches (concurrency 5)`);
 
       const tasks = batches.map((batchIds, b) => async () => {
-        const contentRes = await post(ENDPOINTS.HOTEL_CONTENT, { hotelIds: batchIds }, mode, 'hms');
+        const contentRes = await post(ENDPOINTS.HOTEL_CONTENT, { hotelIds: batchIds }, mode, 'hms', 1, 'hotel-sync');
         const rawHotels = contentRes.hotels ?? [];
-        const mapped = rawHotels.map(mapHotel);
-        const count = await upsertHotels(mapped);
+        const lightweightRows = rawHotels.map(toLightweightRow);
+        const count = await upsertHotelIndex(lightweightRows);
         logger.info(`[syncService]   batch ${b + 1}/${batches.length} — upserted ${count}`);
         return count;
       });
@@ -184,7 +194,7 @@ async function syncDeletedHotels(lastUpdateTime, mode, logId) {
 
       logger.info(`[syncService] Fetching deleted hotel mapping page ${page} (cursor: ${nextCursor ?? 'first'})`);
 
-      const res = await post(ENDPOINTS.HOTEL_DELETED_MAPPING_SYNC, body, mode, 'hms');
+      const res = await post(ENDPOINTS.HOTEL_DELETED_MAPPING_SYNC, body, mode, 'hms', 1, 'hotel-sync');
       const deletedIds = (res.hotels ?? []).map((h) => String(h.tjHotelId ?? '')).filter(Boolean);
 
       if (deletedIds.length) {
@@ -222,7 +232,7 @@ async function syncNationalities(mode, logId) {
   try {
     logger.info('[syncService] Fetching nationality list');
 
-    const res = await get(ENDPOINTS.NATIONALITY_LIST, {}, mode, 'hms');
+    const res = await get(ENDPOINTS.NATIONALITY_LIST, {}, mode, 'hms', 'hotel-sync');
     const raw = res.nationalityInfos ?? [];
 
     const mapped = raw.map((n) => ({

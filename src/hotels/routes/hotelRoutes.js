@@ -13,6 +13,7 @@ const {
 const {
   searchHotels,
   getHotelById,
+  getHotelByTripjackId,
   liveSearchHotels,
   hotelDetail,
   hotelReview,
@@ -58,7 +59,11 @@ router.post('/booking/details', validateBookingDetails, bookingDetails);
 router.post('/booking/cancel', validateCancelBooking, cancelBooking);
 
 // ─── Static DB lookup ────────────────────────────────────────────────────────
-// GET  /hotels/:id
+// GET  /hotels/detail/:hid — by TripJack hotel ID (from live search results;
+//                            seeds the inventory row on first view if missing)
+router.get('/detail/:hid', getHotelByTripjackId);
+
+// GET  /hotels/:id — by internal id (already known, e.g. from DB search)
 router.get('/:id', getHotelById);
 
 module.exports = router;

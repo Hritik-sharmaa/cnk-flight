@@ -2,17 +2,27 @@ name: Hotel Sync
 
 # Schedule summary (all times UTC = IST-5:30):
 #   02:00 UTC daily  → incremental sync: new + updated + deleted hotels since yesterday
-#   00:00 UTC Sunday → full sync: rebuild entire city + hotel catalogue (every 7 days)
+#   00:00 UTC Sunday → full sync: rebuild the lightweight hotel index (every 7 days)
+#   03:00 UTC daily  → purge hotel_details_cache rows older than 24h
 #
-# TripJack V3 Static Content API (confirmed by TripJack support):
-#   fetch-hotel-mapping-sync  → paginate hotel IDs (type: NEW, 2000/page, nextCursor)
-#   fetch-hotel-content       → full hotel details (max 100 IDs/request)
-#   Recommended sync schedule: full catalogue every 7 days, incremental daily
+# Two-tier hotel content model (post 2026-07 Supabase disk-IO fix):
+#   Tier 1 — hotels_inventory: lightweight fields only (name, city, rating,
+#            hero image). Populated by the jobs below via
+#            fetch-hotel-mapping-sync → fetch-hotel-content, but only the
+#            lightweight projection is persisted — images/amenities/
+#            descriptions/rooms/policies from that same response are fetched
+#            and discarded here, not stored. Cheap enough to cover the whole
+#            catalogue on a weekly cadence.
+#   Tier 2 — hotel_details_cache: the heavy content (images, amenities,
+#            descriptions, rooms, policies), fetched on demand via
+#            static-detail only when a user actually opens a hotel, and
+#            purged once a day after 24h — never bulk-synced.
 
 on:
   schedule:
-    - cron: '0 2 * * *'    # Daily 02:00 UTC (07:30 IST) — incremental new + deleted
-    - cron: '0 0 * * 0'    # Weekly Sunday 00:00 UTC (05:30 IST) — full rebuild
+    - cron: '0 2 * * *'    # Daily 02:00 UTC (07:30 IST) — incremental index sync (new + updated + deleted)
+    - cron: '0 0 * * 0'    # Weekly Sunday 00:00 UTC (05:30 IST) — full lightweight index rebuild
+    - cron: '0 3 * * *'    # Daily 03:00 UTC (08:30 IST) — purge hotel_details_cache rows older than 24h
 
   workflow_dispatch:
     inputs:
@@ -22,12 +32,13 @@ on:
         default: 'all'
         type: choice
         options:
-          - all          # cities + full hotel sync
+          - all          # cities + full lightweight hotel index sync
           - cities
-          - hotels-full  # all hotels from 2020 onwards (weekly rebuild)
-          - hotels-incremental  # only hotels added/changed since yesterday
-          - hotels-updated      # only hotels whose data changed since yesterday
+          - hotels-full  # full lightweight index rebuild, all hotels from 2020 onwards (weekly)
+          - hotels-incremental  # only hotels added/changed since yesterday (lightweight index)
+          - hotels-updated      # only hotels whose data changed since yesterday (lightweight index)
           - deleted
+          - purge-detail-cache  # delete hotel_details_cache rows older than 24h
 
 env:
   BASE_URL: ${{ secrets.HOTEL_SYNC_SERVER_URL }}
@@ -94,15 +105,17 @@ jobs:
           echo "City sync status: $STATUS"
           [ "$STATUS" = "success" ] || { echo "City sync did not complete successfully"; exit 1; }
 
-      - name: Sync Hotels (full catalogue — all hotels since 2020)
+      - name: Sync Hotels (full lightweight index — all hotels since 2020)
         if: >
           github.event_name == 'schedule' ||
           inputs.sync_type == 'all' ||
           inputs.sync_type == 'hotels-full'
         run: |
-          echo "Starting full hotel sync (type=NEW, from 2020-01-01)..."
-          echo "Uses: fetch-hotel-mapping-sync → fetch-hotel-content (5 concurrent batches)"
-          echo "Expected duration: ~25-30 minutes"
+          echo "Starting full lightweight index sync (type=NEW, from 2020-01-01)..."
+          echo "Uses: fetch-hotel-mapping-sync → fetch-hotel-content (5 concurrent batches),"
+          echo "but only name/city/rating/hero-image are persisted — images/amenities/"
+          echo "descriptions/rooms/policies are fetched and discarded, not stored."
+          echo "Expected duration: a few minutes (no heavy content written)"
 
           RESPONSE=$(curl -s -w "\n%{http_code}" \
             --max-time 2700 \
@@ -279,3 +292,30 @@ jobs:
           STATUS=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('status',''))" 2>/dev/null || echo "")
           echo "Sync status: $STATUS"
           [ "$STATUS" = "success" ] || { echo "Deleted hotel sync did not complete successfully"; exit 1; }
+
+  # ── Job 3: Daily purge — delete hotel_details_cache rows older than 24h ──────
+  purge-detail-cache:
+    name: Purge Expired Hotel Detail Cache (Daily)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && inputs.sync_type == 'purge-detail-cache')
+
+    steps:
+      - name: Purge expired detail cache
+        run: |
+          echo "Purging hotel_details_cache rows older than 24h..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            --max-time 30 \
+            -X POST "$BASE_URL/api/v1/hotels/sync/purge-detail-cache" \
+            -H "x-api-key: $API_KEY" \
+            -H "Content-Type: application/json")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
+          echo "HTTP $HTTP_CODE"
+
+          [ "$HTTP_CODE" = "200" ] || { echo "Purge failed"; exit 1; }

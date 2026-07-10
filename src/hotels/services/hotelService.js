@@ -1,7 +1,15 @@
 const { randomUUID } = require('crypto');
-const { searchHotels, getHotelById } = require('../repositories/hotelRepository');
+const {
+  searchHotels,
+  getHotelById,
+  getHotelBySupplierHotelId,
+  upsertHotelIndex,
+  getDetailCache,
+  upsertDetailCache,
+} = require('../repositories/hotelRepository');
 const { post } = require('../providers/tripjack/tripjackHotelClient');
 const { ENDPOINTS } = require('../providers/tripjack/tripjackHotelConfig');
+const { toLightweightRow, toDetailCache } = require('../providers/tripjack/tripjackHotelMapper');
 const supabase = require('../../db/supabase');
 const logger = require('../../utils/logger');
 
@@ -92,13 +100,63 @@ async function searchHotelsService({ cityId, cityName, q, minRating, sortBy, pag
   };
 }
 
-// ─── DB: single hotel by ID ──────────────────────────────────────────────────
+// ─── DB: single hotel by ID (lightweight row + on-demand 24h detail cache) ────
+
+async function fetchAndCacheHotelDetail(hotelId, supplierHotelId) {
+  const data = await post(ENDPOINTS.HOTEL_STATIC_DETAIL, { hid: supplierHotelId }, undefined, 'hms', 1, 'hotel-content');
+  const detailCache = toDetailCache(data);
+  await upsertDetailCache(hotelId, detailCache);
+  return detailCache;
+}
+
+async function getHotelDetailService(hotel) {
+  const cached = await getDetailCache(hotel.id);
+  if (cached) {
+    logger.info(`[hotelService] getHotelDetail: cache hit for id=${hotel.id}`);
+    return cached;
+  }
+
+  logger.info(`[hotelService] getHotelDetail: cache miss for id=${hotel.id} — fetching from TripJack`);
+  return fetchAndCacheHotelDetail(hotel.id, hotel.supplier_hotel_id);
+}
 
 async function getHotelByIdService(id) {
   logger.info(`[hotelService] getHotelById: id=${id}`);
   const hotel = await getHotelById(id);
-  logger.info(`[hotelService] getHotelById: ${hotel ? 'found' : 'not found'}`);
-  return hotel;
+  if (!hotel) {
+    logger.info('[hotelService] getHotelById: not found');
+    return null;
+  }
+
+  const detail = await getHotelDetailService(hotel);
+  return { ...hotel, ...detail };
+}
+
+// ─── DB: single hotel by TripJack ID (creates the inventory row on first view) ─
+// Live search results carry TripJack's tjHotelId, not an internal id — a
+// hotel the catalogue-wide sync hasn't reached yet has no row at all. This
+// seeds a lightweight row and the detail cache from a single static-detail
+// call as a sync-lag safety net.
+
+async function getHotelByTripjackIdService(hid) {
+  logger.info(`[hotelService] getHotelByTripjackId: hid=${hid}`);
+  let hotel = await getHotelBySupplierHotelId(hid);
+
+  if (!hotel) {
+    logger.info(`[hotelService] getHotelByTripjackId: no inventory row for hid=${hid} — fetching + seeding`);
+    const data = await post(ENDPOINTS.HOTEL_STATIC_DETAIL, { hid }, undefined, 'hms', 1, 'hotel-content');
+
+    await upsertHotelIndex([toLightweightRow(data)]);
+    hotel = await getHotelBySupplierHotelId(hid);
+    if (!hotel) throw new Error(`Failed to index hotel hid=${hid} after static-detail fetch`);
+
+    const detailCache = toDetailCache(data);
+    await upsertDetailCache(hotel.id, detailCache);
+    return { ...hotel, ...detailCache };
+  }
+
+  const detail = await getHotelDetailService(hotel);
+  return { ...hotel, ...detail };
 }
 
 // ─── Step 1: Live search (TripJack Listing API) ──────────────────────────────
@@ -420,6 +478,7 @@ async function cancelBookingService({ bookingId }) {
 module.exports = {
   searchHotelsService,
   getHotelByIdService,
+  getHotelByTripjackIdService,
   liveSearchHotelsService,
   hotelDetailService,
   hotelReviewService,
