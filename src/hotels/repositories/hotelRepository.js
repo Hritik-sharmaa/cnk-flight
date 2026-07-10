@@ -1,23 +1,25 @@
 const supabase = require('../../db/supabase');
 
-async function upsertHotels(hotels) {
-  if (!hotels.length) return 0;
+const DETAIL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Upsert lightweight rows (name/city/rating/hero image — no heavy content)
+ * into hotels_inventory. Used by the recurring catalogue-wide sync and by
+ * the on-the-fly fallback when a hotel is viewed before the sync has ever
+ * reached it.
+ * @param {Array} rows - toLightweightRow() output from tripjackHotelMapper
+ */
+async function upsertHotelIndex(rows) {
+  if (!rows.length) return 0;
 
   // Batch-resolve region_id by matching city_name + country_name.
   // We intentionally avoid addr.city.code because TripJack uses a different
   // numeric sequence for hotel city codes vs cityRegionId in the city list —
   // they collide across countries and cause hotels to be linked to wrong regions.
-  const cityKeys = [...new Set(
-    hotels
-      .map(({ hotel }) => hotel.cityName && hotel.countryName
-        ? `${hotel.cityName.toLowerCase().trim()}||${hotel.countryName.toLowerCase().trim()}`
-        : null)
-      .filter(Boolean)
-  )];
+  const cityNames = [...new Set(rows.map((r) => r.cityName).filter(Boolean))];
 
   const cityKeyToRegionId = {};
-  if (cityKeys.length) {
-    const cityNames = [...new Set(hotels.map(({ hotel }) => hotel.cityName).filter(Boolean))];
+  if (cityNames.length) {
     const { data: regions } = await supabase
       .from('hotels_regions')
       .select('id, city_name, country_name')
@@ -30,95 +32,127 @@ async function upsertHotels(hotels) {
     });
   }
 
-  const hotelRows = hotels.map(({ hotel }) => {
+  const now = new Date().toISOString();
+  const hotelRows = rows.map((hotel) => {
     const key = hotel.cityName && hotel.countryName
       ? `${hotel.cityName.toLowerCase().trim()}||${hotel.countryName.toLowerCase().trim()}`
       : null;
     return {
-    supplier: hotel.supplier,
-    supplier_hotel_id: hotel.supplierHotelId,
-    unica_id: hotel.unicaId,
-    region_id: key ? (cityKeyToRegionId[key] ?? null) : null,
-    name: hotel.name,
-    slug: hotel.slug,
-    property_type: hotel.propertyType,
-    description: hotel.description,
-    rating: hotel.rating,
-    is_deleted: hotel.isDeleted ?? false,
-    address_line: hotel.addressLine,
-    postal_code: hotel.postalCode,
-    city_name: hotel.cityName,
-    state_name: hotel.stateName,
-    country_name: hotel.countryName,
-    country_code: hotel.countryCode,
-    latitude: hotel.latitude,
-    longitude: hotel.longitude,
-    contact_phone: hotel.contactPhone,
-    contact_email: hotel.contactEmail,
-    contact_fax: hotel.contactFax,
-    website: hotel.website,
-    raw_data: hotel.rawData,
-    last_synced_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+      supplier: hotel.supplier,
+      supplier_hotel_id: hotel.supplierHotelId,
+      unica_id: hotel.unicaId,
+      region_id: key ? (cityKeyToRegionId[key] ?? null) : null,
+      name: hotel.name,
+      slug: hotel.slug,
+      property_type: hotel.propertyType,
+      rating: hotel.rating,
+      is_deleted: hotel.isDeleted ?? false,
+      address_line: hotel.addressLine,
+      postal_code: hotel.postalCode,
+      city_name: hotel.cityName,
+      state_name: hotel.stateName,
+      country_name: hotel.countryName,
+      country_code: hotel.countryCode,
+      latitude: hotel.latitude,
+      longitude: hotel.longitude,
+      contact_phone: hotel.contactPhone,
+      hero_image_url: hotel.heroImageUrl,
+      last_synced_at: now,
+      updated_at: now,
     };
   });
 
-  const { data: upsertedHotels, error: hotelError } = await supabase
+  const { error } = await supabase
     .from('hotels_inventory')
-    .upsert(hotelRows, { onConflict: 'supplier,supplier_hotel_id' })
-    .select('id, supplier_hotel_id');
+    .upsert(hotelRows, { onConflict: 'supplier,supplier_hotel_id' });
 
-  if (hotelError) throw hotelError;
-
-  // Map supplier_hotel_id → internal id for image/facility inserts
-  const idMap = {};
-  (upsertedHotels ?? []).forEach((h) => {
-    idMap[h.supplier_hotel_id] = h.id;
-  });
-
-  const allImages = [];
-  const allFacilities = [];
-  const hotelIds = [];
-
-  hotels.forEach(({ hotel, images, facilities }) => {
-    const hotelId = idMap[hotel.supplierHotelId];
-    if (!hotelId) return;
-
-    hotelIds.push(hotelId);
-    images.forEach((img) => allImages.push({
-      hotel_id: hotelId,
-      image_url: img.imageUrl,
-      image_size: img.imageSize,
-      is_hero_image: img.isHeroImage ?? false,
-      sort_order: img.sortOrder,
-    }));
-    facilities.forEach((f) => allFacilities.push({
-      hotel_id: hotelId,
-      facility_code: f.facilityCode,
-      facility_type: f.facilityType,
-      facility_name: f.facilityName,
-    }));
-  });
-
-  if (hotelIds.length) {
-    await supabase.from('hotels_images').delete().in('hotel_id', hotelIds);
-    await supabase.from('hotels_facilities').delete().in('hotel_id', hotelIds);
-
-    if (allImages.length) {
-      const { error: imgError } = await supabase.from('hotels_images').insert(allImages);
-      if (imgError) throw imgError;
-    }
-
-    if (allFacilities.length) {
-      const { error: facError } = await supabase.from('hotels_facilities').insert(allFacilities);
-      if (facError) throw facError;
-    }
-  }
-
+  if (error) throw error;
   return hotelRows.length;
 }
 
-const HOTEL_COLS = 'id, name, rating, property_type, city_name, country_name, address_line, latitude, longitude, supplier_hotel_id, description, contact_phone, website';
+/**
+ * Upsert bare hotel↔region associations from fetch-hotel-mapping
+ * ({tjHotelId, unicaId} only — no name/rating/images, that endpoint doesn't
+ * return them). Deliberately omits name/rating/hero_image_url/etc. from the
+ * payload entirely (not even as null) so Postgres upsert leaves those
+ * columns untouched on conflict — this must never clobber lightweight
+ * fields a hotel already picked up from a live search or detail view.
+ * @param {Array<{supplierHotelId, unicaId, regionId}>} rows
+ */
+async function upsertHotelMapping(rows) {
+  if (!rows.length) return 0;
+
+  const now = new Date().toISOString();
+  const hotelRows = rows.map((r) => ({
+    supplier: 'tripjack',
+    supplier_hotel_id: r.supplierHotelId,
+    unica_id: r.unicaId,
+    region_id: r.regionId,
+    updated_at: now,
+  }));
+
+  const { error } = await supabase
+    .from('hotels_inventory')
+    .upsert(hotelRows, { onConflict: 'supplier,supplier_hotel_id' });
+
+  if (error) throw error;
+  return hotelRows.length;
+}
+
+// Hotel IDs mapped to a region (populated by the region-scoped hotel-mapping
+// sync) — used to resolve `hids` for live search by cityId, since TripJack
+// v3 removed cityCode from the Listing API and requires hids.
+async function getHotelIdsByRegion(regionId, limit = 100) {
+  const { data, error } = await supabase
+    .from('hotels_inventory')
+    .select('supplier_hotel_id')
+    .eq('region_id', regionId)
+    .eq('is_deleted', false)
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []).map((h) => h.supplier_hotel_id);
+}
+
+async function getDetailCache(hotelId) {
+  const { data, error } = await supabase
+    .from('hotel_details_cache')
+    .select('detail_cache, cached_at')
+    .eq('hotel_id', hotelId)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') return null; // not found
+    throw error;
+  }
+
+  const isStale = Date.now() - new Date(data.cached_at).getTime() > DETAIL_CACHE_TTL_MS;
+  return isStale ? null : data.detail_cache;
+}
+
+async function upsertDetailCache(hotelId, detailCache) {
+  const { error } = await supabase
+    .from('hotel_details_cache')
+    .upsert(
+      { hotel_id: hotelId, detail_cache: detailCache, cached_at: new Date().toISOString() },
+      { onConflict: 'hotel_id' },
+    );
+  if (error) throw error;
+}
+
+async function purgeExpiredDetailCache() {
+  const cutoff = new Date(Date.now() - DETAIL_CACHE_TTL_MS).toISOString();
+  const { data, error } = await supabase
+    .from('hotel_details_cache')
+    .delete()
+    .lt('cached_at', cutoff)
+    .select('id');
+
+  if (error) throw error;
+  return (data ?? []).length;
+}
+
+const HOTEL_COLS = 'id, name, rating, property_type, city_name, country_name, address_line, latitude, longitude, supplier_hotel_id, contact_phone, hero_image_url';
 
 // Sanitize free-text input into a safe plainto_tsquery string.
 // plainto_tsquery is injection-safe — Supabase parameterises it.
@@ -174,12 +208,25 @@ async function searchHotels({ cityId, q, minRating, sortBy = 'rating_desc', page
 async function getHotelById(id) {
   const { data, error } = await supabase
     .from('hotels_inventory')
-    .select(`
-      *,
-      hotels_images ( image_url, image_size, sort_order ),
-      hotels_facilities ( facility_code, facility_type, facility_name )
-    `)
+    .select('*')
     .eq('id', id)
+    .eq('is_deleted', false)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') return null;
+    throw error;
+  }
+
+  return data;
+}
+
+async function getHotelBySupplierHotelId(supplierHotelId) {
+  const { data, error } = await supabase
+    .from('hotels_inventory')
+    .select('*')
+    .eq('supplier', 'tripjack')
+    .eq('supplier_hotel_id', supplierHotelId)
     .eq('is_deleted', false)
     .single();
 
@@ -203,4 +250,15 @@ async function markHotelsDeleted(supplierHotelIds) {
   return (data ?? []).length;
 }
 
-module.exports = { upsertHotels, markHotelsDeleted, searchHotels, getHotelById };
+module.exports = {
+  upsertHotelIndex,
+  upsertHotelMapping,
+  markHotelsDeleted,
+  searchHotels,
+  getHotelById,
+  getHotelBySupplierHotelId,
+  getHotelIdsByRegion,
+  getDetailCache,
+  upsertDetailCache,
+  purgeExpiredDetailCache,
+};

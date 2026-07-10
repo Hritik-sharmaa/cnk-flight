@@ -1,7 +1,16 @@
 const { randomUUID } = require('crypto');
-const { searchHotels, getHotelById } = require('../repositories/hotelRepository');
+const {
+  searchHotels,
+  getHotelById,
+  getHotelBySupplierHotelId,
+  getHotelIdsByRegion,
+  upsertHotelIndex,
+  getDetailCache,
+  upsertDetailCache,
+} = require('../repositories/hotelRepository');
 const { post } = require('../providers/tripjack/tripjackHotelClient');
 const { ENDPOINTS } = require('../providers/tripjack/tripjackHotelConfig');
+const { toLightweightRow, toDetailCache } = require('../providers/tripjack/tripjackHotelMapper');
 const supabase = require('../../db/supabase');
 const logger = require('../../utils/logger');
 
@@ -92,36 +101,97 @@ async function searchHotelsService({ cityId, cityName, q, minRating, sortBy, pag
   };
 }
 
-// ─── DB: single hotel by ID ──────────────────────────────────────────────────
+// ─── DB: single hotel by ID (lightweight row + on-demand 24h detail cache) ────
+
+async function fetchAndCacheHotelDetail(hotelId, supplierHotelId) {
+  const data = await post(ENDPOINTS.HOTEL_STATIC_DETAIL, { hid: supplierHotelId }, undefined, 'hms', 1, 'hotel-content');
+
+  // Refresh the lightweight columns (name/rating/hero image) from this same
+  // response too, not just the heavy cache — keeps hotels_inventory current
+  // whenever we already have fresh data, instead of only on first sighting.
+  await upsertHotelIndex([toLightweightRow(data)]);
+
+  const detailCache = toDetailCache(data);
+  await upsertDetailCache(hotelId, detailCache);
+  return detailCache;
+}
+
+async function getHotelDetailService(hotel) {
+  const cached = await getDetailCache(hotel.id);
+  if (cached) {
+    logger.info(`[hotelService] getHotelDetail: cache hit for id=${hotel.id}`);
+    return cached;
+  }
+
+  logger.info(`[hotelService] getHotelDetail: cache miss for id=${hotel.id} — fetching from TripJack`);
+  return fetchAndCacheHotelDetail(hotel.id, hotel.supplier_hotel_id);
+}
 
 async function getHotelByIdService(id) {
   logger.info(`[hotelService] getHotelById: id=${id}`);
   const hotel = await getHotelById(id);
-  logger.info(`[hotelService] getHotelById: ${hotel ? 'found' : 'not found'}`);
-  return hotel;
+  if (!hotel) {
+    logger.info('[hotelService] getHotelById: not found');
+    return null;
+  }
+
+  const detail = await getHotelDetailService(hotel);
+  return { ...hotel, ...detail };
+}
+
+// ─── DB: single hotel by TripJack ID (creates the inventory row on first view) ─
+// Live search results carry TripJack's tjHotelId, not an internal id — a
+// hotel the catalogue-wide sync hasn't reached yet has no row at all. This
+// seeds a lightweight row and the detail cache from a single static-detail
+// call as a sync-lag safety net.
+
+async function getHotelByTripjackIdService(hid) {
+  logger.info(`[hotelService] getHotelByTripjackId: hid=${hid}`);
+  let hotel = await getHotelBySupplierHotelId(hid);
+
+  if (!hotel) {
+    logger.info(`[hotelService] getHotelByTripjackId: no inventory row for hid=${hid} — fetching + seeding`);
+    const data = await post(ENDPOINTS.HOTEL_STATIC_DETAIL, { hid }, undefined, 'hms', 1, 'hotel-content');
+
+    await upsertHotelIndex([toLightweightRow(data)]);
+    hotel = await getHotelBySupplierHotelId(hid);
+    if (!hotel) throw new Error(`Failed to index hotel hid=${hid} after static-detail fetch`);
+
+    const detailCache = toDetailCache(data);
+    await upsertDetailCache(hotel.id, detailCache);
+    return { ...hotel, ...detailCache };
+  }
+
+  const detail = await getHotelDetailService(hotel);
+  return { ...hotel, ...detail };
 }
 
 // ─── Step 1: Live search (TripJack Listing API) ──────────────────────────────
-// Supports two modes:
-//   - cityId only     → resolves to TripJack cityCode, no hids filter
-//   - hids only       → direct hotel ID search, no cityCode needed
-//   - cityId + hids   → cityCode + hids filter together
+// v3 removed `cityCode` from Listing entirely — it now only accepts `hids`.
+// So a cityId-only search resolves to a set of hids via hotels_inventory
+// (populated by the region-scoped hotel-mapping sync), not a cityCode field.
+// Supports:
+//   - cityId only     → resolves to hids mapped to that region (max 100)
+//   - hids only        → direct hotel ID search
+//   - cityId + hids    → union of both, capped at 100 (TripJack's per-request max)
 //
 // All extra body fields (future TripJack additions) are spread into the payload
 // as-is so nothing is silently dropped.
 
+const LISTING_HIDS_MAX = 100;
+
 async function liveSearchHotelsService(body) {
   const { cityId, hids, correlationId, ...rest } = body;
 
-  const mode = cityId && hids?.length ? 'cityId+hids' : cityId ? 'cityId' : 'hids';
-  logger.info(`[hotelService] liveSearch: mode=${mode}, cityId=${cityId ?? 'N/A'}, hids=${hids?.length ?? 0}, checkIn=${body.checkIn}, checkOut=${body.checkOut}, rooms=${body.rooms.length}`);
+  logger.info(`[hotelService] liveSearch: cityId=${cityId ?? 'N/A'}, hids=${hids?.length ?? 0}, checkIn=${body.checkIn}, checkOut=${body.checkOut}, rooms=${body.rooms.length}`);
 
   let cityInfo = null;
+  let resolvedHids = (hids ?? []).map((id) => String(id));
 
   if (cityId) {
     const { data: region, error } = await supabase
       .from('hotels_regions')
-      .select('supplier_region_id, city_name, country_name')
+      .select('id, city_name, country_name')
       .eq('id', cityId)
       .eq('supplier', 'tripjack')
       .single();
@@ -132,7 +202,19 @@ async function liveSearchHotelsService(body) {
     }
 
     cityInfo = region;
-    logger.info(`[hotelService] liveSearch: resolved city="${region.city_name}", cityCode=${region.supplier_region_id}`);
+
+    const mappedHids = await getHotelIdsByRegion(region.id, LISTING_HIDS_MAX);
+    logger.info(`[hotelService] liveSearch: resolved city="${region.city_name}" → ${mappedHids.length} mapped hids`);
+
+    resolvedHids = [...new Set([...resolvedHids, ...mappedHids])].slice(0, LISTING_HIDS_MAX);
+  }
+
+  if (!resolvedHids.length) {
+    throw new Error(
+      cityId
+        ? `No hotels indexed yet for cityId=${cityId} — run the hotel-mapping sync for this city first`
+        : 'hids is required (no cityId provided)'
+    );
   }
 
   // Spread all client-sent fields first (preserves any TripJack fields we haven't
@@ -140,9 +222,7 @@ async function liveSearchHotelsService(body) {
   const payload = {
     ...rest,                                             // checkIn, checkOut, rooms, currency, nationality, timeoutMs, + any extra TripJack fields
     correlationId: correlationId ?? randomUUID(),        // use client-provided or generate
-    ...(cityInfo ? { cityCode: cityInfo.supplier_region_id } : {}),
-    // TripJack requires hids as integers, not strings
-    ...(hids?.length ? { hids: hids.map((id) => parseInt(String(id), 10)) } : {}),
+    hids: resolvedHids.map((id) => parseInt(id, 10)),    // TripJack requires hids as integers
   };
 
   logger.info('[hotelService] liveSearch: sending payload to TripJack', { payload });
@@ -420,6 +500,7 @@ async function cancelBookingService({ bookingId }) {
 module.exports = {
   searchHotelsService,
   getHotelByIdService,
+  getHotelByTripjackIdService,
   liveSearchHotelsService,
   hotelDetailService,
   hotelReviewService,

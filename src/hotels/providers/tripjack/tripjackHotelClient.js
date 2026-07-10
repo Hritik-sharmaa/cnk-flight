@@ -51,8 +51,9 @@ function checkTripjackError(data, path) {
  * @param {Object} queryParams
  * @param {'live'|'test'} [mode]
  * @param {'hms'|'static'} [service='hms']
+ * @param {string} [clientType='hotel-booking'] - 'hotel-sync' calls are never logged to hotels_api_logs
  */
-async function get(path, queryParams = {}, mode, service = 'hms') {
+async function get(path, queryParams = {}, mode, service = 'hms', clientType = 'hotel-booking') {
   const resolvedMode = resolveMode(mode);
   const baseUrl = getBaseUrl(resolvedMode, service);
   const traceId = randomUUID();
@@ -81,7 +82,11 @@ async function get(path, queryParams = {}, mode, service = 'hms') {
     });
     throw err;
   } finally {
-    logToDB({ traceId, clientType: 'hotel-sync', endpoint: path, method: 'GET', requestBody: queryParams, responseBody: responseData, responseStatus, responseTimeMs: Date.now() - start, success, errorMessage });
+    // Sync-job traffic is already logged to Winston above — skip the DB audit
+    // trail for it so hotels_api_logs doesn't grow unbounded from bulk jobs.
+    if (clientType !== 'hotel-sync') {
+      logToDB({ traceId, clientType, endpoint: path, method: 'GET', requestBody: queryParams, responseBody: responseData, responseStatus, responseTimeMs: Date.now() - start, success, errorMessage });
+    }
   }
 }
 
@@ -91,8 +96,10 @@ async function get(path, queryParams = {}, mode, service = 'hms') {
  * @param {Object} body
  * @param {'live'|'test'} [mode]
  * @param {'hms'|'static'} [service='hms']
+ * @param {number} [retries=1]
+ * @param {string} [clientType='hotel-booking'] - 'hotel-sync' calls are never logged to hotels_api_logs
  */
-async function post(path, body = {}, mode, service = 'hms', retries = 1) {
+async function post(path, body = {}, mode, service = 'hms', retries = 1, clientType = 'hotel-booking') {
   const resolvedMode = resolveMode(mode);
   const baseUrl = getBaseUrl(resolvedMode, service);
   const traceId = randomUUID();
@@ -122,7 +129,7 @@ async function post(path, body = {}, mode, service = 'hms', retries = 1) {
     if (retries > 0 && isRetryable) {
       logger.warn(`[tripjackHotelClient] POST ${path} timed out — retrying (${retries} left)`);
       await new Promise((r) => setTimeout(r, 3000)); // 3s back-off before retry
-      return post(path, body, mode, service, retries - 1);
+      return post(path, body, mode, service, retries - 1, clientType);
     }
 
     responseStatus = responseStatus ?? err.response?.status ?? null;
@@ -133,7 +140,9 @@ async function post(path, body = {}, mode, service = 'hms', retries = 1) {
     });
     throw err;
   } finally {
-    logToDB({ traceId, clientType: 'hotel-sync', endpoint: path, method: 'POST', requestBody: body, responseBody: responseData, responseStatus, responseTimeMs: Date.now() - start, success, errorMessage });
+    if (clientType !== 'hotel-sync') {
+      logToDB({ traceId, clientType, endpoint: path, method: 'POST', requestBody: body, responseBody: responseData, responseStatus, responseTimeMs: Date.now() - start, success, errorMessage });
+    }
   }
 }
 
