@@ -41,6 +41,15 @@ async function runConcurrent(tasks, limit = 5) {
  * but everything outside CNK's ~196 destinations is discarded rather than
  * stored, since that's what keeps the downstream hotel-mapping sync scoped
  * to a tractable size instead of TripJack's whole worldwide catalogue.
+ *
+ * TripJack's own city master data has confirmed duplicates — the same real
+ * city (identical name/state/country) can appear under two different
+ * cityRegionIds (e.g. Bangkok, Thailand appeared as both 727326 and 740089).
+ * Since duplicates can land on different pages of the cursor walk, dedup is
+ * tracked across the whole run (not per-page) by (city_name, country_name),
+ * keeping only the first cityRegionId seen for each real place — otherwise
+ * the downstream hotel-mapping sync redundantly walks the same city under
+ * multiple region rows.
  * @param {'live'|'test'} [mode]
  */
 async function syncCities(mode, logId) {
@@ -55,6 +64,7 @@ async function syncCities(mode, logId) {
   let cursor = null;
   let hasMore = true;
   let page = 1;
+  const seenCityCountryKeys = new Set();
 
   try {
     const sellableNames = await getSellableCityNames();
@@ -71,7 +81,13 @@ async function syncCities(mode, logId) {
       const raw = res.hotelCityRegionIds ?? [];
       const mapped = raw
         .map(mapCity)
-        .filter((c) => c.cityName && sellableNames.has(c.cityName.trim().toLowerCase()));
+        .filter((c) => c.cityName && sellableNames.has(c.cityName.trim().toLowerCase()))
+        .filter((c) => {
+          const key = `${c.cityName.trim().toLowerCase()}||${(c.countryName ?? '').trim().toLowerCase()}`;
+          if (seenCityCountryKeys.has(key)) return false;
+          seenCityCountryKeys.add(key);
+          return true;
+        });
       const count = mapped.length ? await upsertCities(mapped) : 0;
       totalProcessed += count;
 
