@@ -1,0 +1,45 @@
+Hi Anushka,
+
+I have checked the logs and verified you can proceed further.
+
+@Aatif Khan Please take this forward for the v3 certification.
+
+Please consider this for the future.
+
+1. I noticed an inconsistency in the booking requests. In some cases, panRequired is set to true, but the Passport details are being sent. In other cases, both PAN and Passport details are sent in the same booking request. Please send the details according to the requirement.
+
+2. Static Detail  API should be considered before proceeding with the booking, as it contains information about policies, check-in instructions, and fees excluded that need to be paid directly at the hotel, along with other inclusion and exclusion details.  
+
+3. Please find the v3 production URLs below.
+
+For Static Content APIs, Nationality, Search API, Detail API, and Review API:
+https://hms-search.tripjack.com
+For Booking API, Booking Detail API, and Cancellation API:
+https://hms-booker.tripjack.com
+
+
+Points to be noted for future reference:
+
+1.  Some bookings have the status : "payment success" and "IN_Progress", which should be "success". Please refer to the correct status mapping provided below.  
+
+2.  Retrieves the current status and full details of a booking. Use this to poll for confirmation after a Book request (every 5 seconds, up to 180 seconds), and to look up booking state at any time.
+  
+Booking	Final Status
+IN_PROGRESS	
+SUCCESS	Terminal State (Success)
+ON_HOLD	Terminal State (Success//OnHold)
+PAYMENT_SUCCESS	Pending
+PAYMENT_PENDING	Pending
+PENDING	Pending
+ABORTED	Terminal State (Aborted). Booking Failed from Supplier.
+FAILED	Terminal State (Failed) Booking request Failed.
+Post Booking	
+CANCELLATION_PENDING	request not processed fully. The Ops team takes these requests offline with the source to cancel the booking.
+Suggested Reconciliation status check (Daily)
+CANCELLED	Terminal State (cancelled)
+
+
+2. Always trigger the Booking Detail Request after cancellation to confirm whether the booking is successfully cancelled or not.
+In some cases, it may remain under “cancellation pending”, in which case you should coordinate with the Ops team for manual cancellation.
+3. Use the Review API response (Price, CNP, etc.) as the final reference for the booking.
+read
