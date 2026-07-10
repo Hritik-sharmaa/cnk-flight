@@ -3,7 +3,7 @@ const { ENDPOINTS, PAGINATION } = require('../providers/tripjack/tripjackHotelCo
 const { mapCity, toLightweightRow } = require('../providers/tripjack/tripjackHotelMapper');
 const logger = require('../../utils/logger');
 const { createSyncLog, completeSyncLog } = require('../repositories/syncLogRepository');
-const { upsertCities, getSellableCityNames, listRegions } = require('../repositories/cityRepository');
+const { upsertCities, getSellableCityCountryMap, listRegions } = require('../repositories/cityRepository');
 const { upsertHotelMapping, upsertHotelIndex, markHotelsDeleted } = require('../repositories/hotelRepository');
 const { bulkUpsertNationalities } = require('../repositories/nationalityRepository');
 
@@ -35,21 +35,31 @@ async function runConcurrent(tasks, limit = 5) {
 
 /**
  * Fetch all cities from TripJack (cursor-paginated) and upsert into
- * hotels_regions — but only cities that match CNK's own destination list
- * (public.cities, extracted from packages — the only places CNK actually
- * sells). TripJack's global city list is walked once (cheap, ID+name only)
- * but everything outside CNK's ~196 destinations is discarded rather than
- * stored, since that's what keeps the downstream hotel-mapping sync scoped
- * to a tractable size instead of TripJack's whole worldwide catalogue.
+ * hotels_regions — but only cities that match CNK's own destination list,
+ * sourced from public.countries.cities (admin-curated per-country city
+ * lists, e.g. the "India" row's cities field lists "Barkot, Guwahati, ...,
+ * Agra, ..."). TripJack's global city list is walked once (cheap, ID+name
+ * only) but everything outside CNK's real destinations is discarded rather
+ * than stored, since that's what keeps the downstream hotel-mapping sync
+ * scoped to a tractable size instead of TripJack's whole worldwide
+ * catalogue.
  *
- * TripJack's own city master data has confirmed duplicates — the same real
- * city (identical name/state/country) can appear under two different
- * cityRegionIds (e.g. Bangkok, Thailand appeared as both 727326 and 740089).
- * Since duplicates can land on different pages of the cursor walk, dedup is
- * tracked across the whole run (not per-page) by (city_name, country_name),
- * keeping only the first cityRegionId seen for each real place — otherwise
- * the downstream hotel-mapping sync redundantly walks the same city under
- * multiple region rows.
+ * Matching is by (city name, country) together, not name alone — TripJack's
+ * global list has many same-named cities in different countries (confirmed:
+ * "Granada" exists in Spain, Colombia, and Nicaragua; "Barcelona" in Spain,
+ * Brazil, Ecuador, Peru, and the Philippines; over 100 of CNK's ~335
+ * destination names collided this way when matched by name only). A
+ * TripJack city only counts as a match if its country is one CNK's own
+ * `countries.cities` data says that city name belongs to.
+ *
+ * TripJack's own city master data also has confirmed exact duplicates — the
+ * same real city (identical name/state/country) can appear under two
+ * different cityRegionIds (e.g. Bangkok, Thailand appeared as both 727326
+ * and 740089). Since duplicates can land on different pages of the cursor
+ * walk, dedup is tracked across the whole run (not per-page) by (city_name,
+ * country_name), keeping only the first cityRegionId seen for each real
+ * place — otherwise the downstream hotel-mapping sync redundantly walks the
+ * same city under multiple region rows.
  * @param {'live'|'test'} [mode]
  */
 async function syncCities(mode, logId) {
@@ -67,8 +77,8 @@ async function syncCities(mode, logId) {
   const seenCityCountryKeys = new Set();
 
   try {
-    const sellableNames = await getSellableCityNames();
-    logger.info(`[syncService] Scoping city sync to ${sellableNames.size} CNK destinations`);
+    const cityCountryMap = await getSellableCityCountryMap();
+    logger.info(`[syncService] Scoping city sync to ${cityCountryMap.size} CNK destination names`);
 
     while (hasMore) {
       const params = { limit: PAGINATION.CITY_LIMIT };
@@ -81,7 +91,13 @@ async function syncCities(mode, logId) {
       const raw = res.hotelCityRegionIds ?? [];
       const mapped = raw
         .map(mapCity)
-        .filter((c) => c.cityName && sellableNames.has(c.cityName.trim().toLowerCase()))
+        .filter((c) => {
+          if (!c.cityName) return false;
+          const allowedCountries = cityCountryMap.get(c.cityName.trim().toLowerCase());
+          if (!allowedCountries) return false; // not a CNK destination at all
+          const tripjackCountry = (c.countryName ?? '').trim().toUpperCase();
+          return allowedCountries.has(tripjackCountry);
+        })
         .filter((c) => {
           const key = `${c.cityName.trim().toLowerCase()}||${(c.countryName ?? '').trim().toLowerCase()}`;
           if (seenCityCountryKeys.has(key)) return false;
