@@ -3,6 +3,7 @@ const {
   searchHotels,
   getHotelById,
   getHotelBySupplierHotelId,
+  getHotelIdsByRegion,
   upsertHotelIndex,
   getDetailCache,
   upsertDetailCache,
@@ -104,6 +105,12 @@ async function searchHotelsService({ cityId, cityName, q, minRating, sortBy, pag
 
 async function fetchAndCacheHotelDetail(hotelId, supplierHotelId) {
   const data = await post(ENDPOINTS.HOTEL_STATIC_DETAIL, { hid: supplierHotelId }, undefined, 'hms', 1, 'hotel-content');
+
+  // Refresh the lightweight columns (name/rating/hero image) from this same
+  // response too, not just the heavy cache — keeps hotels_inventory current
+  // whenever we already have fresh data, instead of only on first sighting.
+  await upsertHotelIndex([toLightweightRow(data)]);
+
   const detailCache = toDetailCache(data);
   await upsertDetailCache(hotelId, detailCache);
   return detailCache;
@@ -160,26 +167,31 @@ async function getHotelByTripjackIdService(hid) {
 }
 
 // ─── Step 1: Live search (TripJack Listing API) ──────────────────────────────
-// Supports two modes:
-//   - cityId only     → resolves to TripJack cityCode, no hids filter
-//   - hids only       → direct hotel ID search, no cityCode needed
-//   - cityId + hids   → cityCode + hids filter together
+// v3 removed `cityCode` from Listing entirely — it now only accepts `hids`.
+// So a cityId-only search resolves to a set of hids via hotels_inventory
+// (populated by the region-scoped hotel-mapping sync), not a cityCode field.
+// Supports:
+//   - cityId only     → resolves to hids mapped to that region (max 100)
+//   - hids only        → direct hotel ID search
+//   - cityId + hids    → union of both, capped at 100 (TripJack's per-request max)
 //
 // All extra body fields (future TripJack additions) are spread into the payload
 // as-is so nothing is silently dropped.
 
+const LISTING_HIDS_MAX = 100;
+
 async function liveSearchHotelsService(body) {
   const { cityId, hids, correlationId, ...rest } = body;
 
-  const mode = cityId && hids?.length ? 'cityId+hids' : cityId ? 'cityId' : 'hids';
-  logger.info(`[hotelService] liveSearch: mode=${mode}, cityId=${cityId ?? 'N/A'}, hids=${hids?.length ?? 0}, checkIn=${body.checkIn}, checkOut=${body.checkOut}, rooms=${body.rooms.length}`);
+  logger.info(`[hotelService] liveSearch: cityId=${cityId ?? 'N/A'}, hids=${hids?.length ?? 0}, checkIn=${body.checkIn}, checkOut=${body.checkOut}, rooms=${body.rooms.length}`);
 
   let cityInfo = null;
+  let resolvedHids = (hids ?? []).map((id) => String(id));
 
   if (cityId) {
     const { data: region, error } = await supabase
       .from('hotels_regions')
-      .select('supplier_region_id, city_name, country_name')
+      .select('id, city_name, country_name')
       .eq('id', cityId)
       .eq('supplier', 'tripjack')
       .single();
@@ -190,7 +202,19 @@ async function liveSearchHotelsService(body) {
     }
 
     cityInfo = region;
-    logger.info(`[hotelService] liveSearch: resolved city="${region.city_name}", cityCode=${region.supplier_region_id}`);
+
+    const mappedHids = await getHotelIdsByRegion(region.id, LISTING_HIDS_MAX);
+    logger.info(`[hotelService] liveSearch: resolved city="${region.city_name}" → ${mappedHids.length} mapped hids`);
+
+    resolvedHids = [...new Set([...resolvedHids, ...mappedHids])].slice(0, LISTING_HIDS_MAX);
+  }
+
+  if (!resolvedHids.length) {
+    throw new Error(
+      cityId
+        ? `No hotels indexed yet for cityId=${cityId} — run the hotel-mapping sync for this city first`
+        : 'hids is required (no cityId provided)'
+    );
   }
 
   // Spread all client-sent fields first (preserves any TripJack fields we haven't
@@ -198,9 +222,7 @@ async function liveSearchHotelsService(body) {
   const payload = {
     ...rest,                                             // checkIn, checkOut, rooms, currency, nationality, timeoutMs, + any extra TripJack fields
     correlationId: correlationId ?? randomUUID(),        // use client-provided or generate
-    ...(cityInfo ? { cityCode: cityInfo.supplier_region_id } : {}),
-    // TripJack requires hids as integers, not strings
-    ...(hids?.length ? { hids: hids.map((id) => parseInt(String(id), 10)) } : {}),
+    hids: resolvedHids.map((id) => parseInt(id, 10)),    // TripJack requires hids as integers
   };
 
   logger.info('[hotelService] liveSearch: sending payload to TripJack', { payload });

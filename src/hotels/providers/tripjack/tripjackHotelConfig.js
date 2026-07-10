@@ -26,7 +26,8 @@ const BASE_URLS = {
 const ENDPOINTS = {
   // Static content sync (HMS service)
   CITY_LIST:                 '/hms/v3/content/fetch-city-regionIds',          // GET  — HMS
-  HOTEL_MAPPING_SYNC:        '/hms/v3/content/fetch-hotel-mapping-sync',       // POST — HMS type:NEW|UPDATE
+  HOTEL_MAPPING_SYNC:        '/hms/v3/content/fetch-hotel-mapping-sync',       // POST — HMS type:NEW|UPDATE (unused since the region-scoped rewrite; kept for reference)
+  HOTEL_MAPPING:             '/hms/v3/content/fetch-hotel-mapping',            // POST — HMS, filtered by regionIds (or countryName), paginated page/size (max 2000)
   HOTEL_DELETED_MAPPING_SYNC: '/hms/v3/content/fetch-deleted-hotel-mapping',   // POST — HMS type:DELETE
   HOTEL_CONTENT:             '/hms/v3/content/fetch-hotel-content',            // POST — HMS (full content, max 100 IDs/req)
   HOTEL_STATIC_DETAIL:       '/hms/v3/hotel/static-detail',                    // POST — HMS (single hotel, full content — on-demand detail cache)

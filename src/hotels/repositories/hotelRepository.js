@@ -70,6 +70,50 @@ async function upsertHotelIndex(rows) {
   return hotelRows.length;
 }
 
+/**
+ * Upsert bare hotel↔region associations from fetch-hotel-mapping
+ * ({tjHotelId, unicaId} only — no name/rating/images, that endpoint doesn't
+ * return them). Deliberately omits name/rating/hero_image_url/etc. from the
+ * payload entirely (not even as null) so Postgres upsert leaves those
+ * columns untouched on conflict — this must never clobber lightweight
+ * fields a hotel already picked up from a live search or detail view.
+ * @param {Array<{supplierHotelId, unicaId, regionId}>} rows
+ */
+async function upsertHotelMapping(rows) {
+  if (!rows.length) return 0;
+
+  const now = new Date().toISOString();
+  const hotelRows = rows.map((r) => ({
+    supplier: 'tripjack',
+    supplier_hotel_id: r.supplierHotelId,
+    unica_id: r.unicaId,
+    region_id: r.regionId,
+    updated_at: now,
+  }));
+
+  const { error } = await supabase
+    .from('hotels_inventory')
+    .upsert(hotelRows, { onConflict: 'supplier,supplier_hotel_id' });
+
+  if (error) throw error;
+  return hotelRows.length;
+}
+
+// Hotel IDs mapped to a region (populated by the region-scoped hotel-mapping
+// sync) — used to resolve `hids` for live search by cityId, since TripJack
+// v3 removed cityCode from the Listing API and requires hids.
+async function getHotelIdsByRegion(regionId, limit = 100) {
+  const { data, error } = await supabase
+    .from('hotels_inventory')
+    .select('supplier_hotel_id')
+    .eq('region_id', regionId)
+    .eq('is_deleted', false)
+    .limit(limit);
+
+  if (error) throw error;
+  return (data ?? []).map((h) => h.supplier_hotel_id);
+}
+
 async function getDetailCache(hotelId) {
   const { data, error } = await supabase
     .from('hotel_details_cache')
@@ -208,10 +252,12 @@ async function markHotelsDeleted(supplierHotelIds) {
 
 module.exports = {
   upsertHotelIndex,
+  upsertHotelMapping,
   markHotelsDeleted,
   searchHotels,
   getHotelById,
   getHotelBySupplierHotelId,
+  getHotelIdsByRegion,
   getDetailCache,
   upsertDetailCache,
   purgeExpiredDetailCache,

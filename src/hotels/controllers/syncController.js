@@ -26,14 +26,18 @@ const triggerCitySync = asyncHandler(async (req, res) => {
 
 const triggerHotelSync = asyncHandler(async (req, res) => {
   const mode           = req.query.mode;
+  // lastUpdateTime/type no longer apply — the region-scoped fetch-hotel-mapping
+  // sync has no incremental concept, it re-walks all scoped regions every run.
+  // Kept as accepted-but-unused query params so existing callers (the GitHub
+  // Actions workflow) don't need to change their request shape.
   const lastUpdateTime = req.query.lastUpdateTime ?? null;
   const type           = req.query.type ?? 'NEW';
   const logId = await createSyncLog({
     supplier: 'tripjack', syncType: 'hotels',
-    requestUrl: ENDPOINTS.HOTEL_MAPPING_SYNC, requestPayload: { mode, lastUpdateTime, type },
+    requestUrl: ENDPOINTS.HOTEL_MAPPING, requestPayload: { mode },
   });
-  logger.info(`Hotel sync triggered [mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, type=${type}, since=${lastUpdateTime ?? 'all'}, logId=${logId}]`);
-  runInBackground(`Hotel sync (${type})`, () => syncHotels(mode, lastUpdateTime, type, logId));
+  logger.info(`Hotel mapping sync triggered [mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, logId=${logId}]`);
+  runInBackground('Hotel mapping sync', () => syncHotels(mode, lastUpdateTime, type, logId));
   return response(res, true, 202, 'Hotel sync started', { logId });
 });
 

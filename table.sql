@@ -229,6 +229,12 @@ ALTER TABLE hotels_inventory
 ALTER TABLE hotels_inventory DROP COLUMN IF EXISTS raw_data;
 ALTER TABLE hotels_inventory DROP COLUMN IF EXISTS description;
 
+-- Region-scoped hotel-mapping sync (fetch-hotel-mapping) only returns
+-- {tjHotelId, unicaId} — no name. A hotel row now exists from that mapping
+-- step alone, before any name/rating/content has ever been fetched, so name
+-- can no longer be guaranteed NOT NULL at insert time.
+ALTER TABLE hotels_inventory ALTER COLUMN name DROP NOT NULL;
+
 -- =============================================================
 
 -- 3. hotel_details_cache
