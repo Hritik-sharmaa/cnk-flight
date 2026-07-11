@@ -1,4 +1,5 @@
 const supabase = require('../../db/supabase');
+const { toTripjackCountryName } = require('../providers/tripjack/tripjackHotelConfig');
 
 // public.cities is CNK's single source of truth for tour destinations
 // (countries.cities and packages.destination_legacy serve other purposes
@@ -9,7 +10,10 @@ const supabase = require('../../db/supabase');
 // Returns a Map<cityNameLower, countryNameUpper> — cities.name is unique,
 // so there's exactly one country per city, no ambiguity to resolve. A city
 // whose `country_id` hasn't been set is left out of the map entirely —
-// TripJack can't be safely matched for it until someone sets it.
+// TripJack can't be safely matched for it until someone sets it. The value
+// is run through toTripjackCountryName() so the map is directly comparable
+// against TripJack's own countryName field (which doesn't always match our
+// display name — e.g. TripJack sends "BURMA (MYANMAR)" for "Myanmar").
 async function getSellableCityCountryMap() {
   const { data, error } = await supabase
     .from('cities')
@@ -19,7 +23,7 @@ async function getSellableCityCountryMap() {
   const map = new Map();
   for (const row of data ?? []) {
     const cityName = (row.name ?? '').trim().toLowerCase();
-    const countryName = (row.countries?.name ?? '').trim().toUpperCase();
+    const countryName = toTripjackCountryName(row.countries?.name);
     if (!cityName || !countryName) continue;
     map.set(cityName, countryName);
   }

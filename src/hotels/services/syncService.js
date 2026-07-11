@@ -1,5 +1,5 @@
 const { get, post } = require('../providers/tripjack/tripjackHotelClient');
-const { ENDPOINTS, PAGINATION } = require('../providers/tripjack/tripjackHotelConfig');
+const { ENDPOINTS, PAGINATION, toTripjackCountryName } = require('../providers/tripjack/tripjackHotelConfig');
 const { mapCity, toLightweightRow } = require('../providers/tripjack/tripjackHotelMapper');
 const logger = require('../../utils/logger');
 const { createSyncLog, completeSyncLog } = require('../repositories/syncLogRepository');
@@ -265,7 +265,7 @@ async function syncSingleCity(cityId, mode, logId) {
     }
 
     const targetCityName = target.name.trim().toLowerCase();
-    const targetCountryName = target.countryName.trim().toUpperCase();
+    const targetCountryName = toTripjackCountryName(target.countryName);
 
     let cursor = null;
     let hasMore = true;

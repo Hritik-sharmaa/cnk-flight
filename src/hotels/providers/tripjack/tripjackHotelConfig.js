@@ -51,4 +51,22 @@ const PAGINATION = {
   HOTEL_CONTENT_SIZE: 100,   // max IDs per fetch-hotel-content request
 };
 
-module.exports = { BASE_URLS, ENDPOINTS, PAGINATION };
+// TripJack's countryName sometimes doesn't match the display name we (and
+// most sources) use — confirmed via production data: TripJack returns
+// "BURMA (MYANMAR)" for what we call "Myanmar", which silently broke
+// city↔country matching for Yangon (name+country match never hit). Keyed
+// by OUR country name (uppercase), value is what TripJack actually sends.
+// Add more here if other countries turn out to have the same mismatch.
+const COUNTRY_NAME_ALIASES = {
+  MYANMAR: 'BURMA (MYANMAR)',
+};
+
+// Converts our countries.name into whatever TripJack's countryName field
+// actually uses, so city-matching compares like with like. Falls through
+// unchanged for the (overwhelming majority of) countries with no alias.
+function toTripjackCountryName(ourCountryName) {
+  const upper = (ourCountryName ?? '').trim().toUpperCase();
+  return COUNTRY_NAME_ALIASES[upper] ?? upper;
+}
+
+module.exports = { BASE_URLS, ENDPOINTS, PAGINATION, toTripjackCountryName };
