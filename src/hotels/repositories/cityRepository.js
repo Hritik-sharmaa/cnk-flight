@@ -1,5 +1,6 @@
 const supabase = require('../../db/supabase');
 const { toTripjackCountryName } = require('../providers/tripjack/tripjackHotelConfig');
+const { getCountryNamesByIsoCodes } = require('./nationalityRepository');
 
 // public.cities is CNK's single source of truth for tour destinations
 // (countries.cities and packages.destination_legacy serve other purposes
@@ -10,20 +11,30 @@ const { toTripjackCountryName } = require('../providers/tripjack/tripjackHotelCo
 // Returns a Map<cityNameLower, countryNameUpper> — cities.name is unique,
 // so there's exactly one country per city, no ambiguity to resolve. A city
 // whose `country_id` hasn't been set is left out of the map entirely —
-// TripJack can't be safely matched for it until someone sets it. The value
-// is run through toTripjackCountryName() so the map is directly comparable
-// against TripJack's own countryName field (which doesn't always match our
-// display name — e.g. TripJack sends "BURMA (MYANMAR)" for "Myanmar").
+// TripJack can't be safely matched for it until someone sets it.
+//
+// The value is resolved to TripJack's own countryName spelling via
+// countries.iso_code -> hotels_nationalities (see
+// nationalityRepository.getCountryNamesByIsoCodes, which reads TripJack's
+// already-synced nationality list, no live API call here) — that's the
+// actual fix for name mismatches like "BURMA (MYANMAR)"/"Myanmar" or
+// "UNITED STATES"/"United States of America". toTripjackCountryName()'s
+// hand-maintained alias map is only a fallback for countries missing an
+// iso_code, or if hotels_nationalities hasn't been synced yet.
 async function getSellableCityCountryMap() {
   const { data, error } = await supabase
     .from('cities')
-    .select('name, countries(name)');
+    .select('name, countries(name, iso_code)');
   if (error) throw error;
+
+  const isoCodes = (data ?? []).map((row) => row.countries?.iso_code).filter(Boolean);
+  const isoMap = await getCountryNamesByIsoCodes(isoCodes);
 
   const map = new Map();
   for (const row of data ?? []) {
     const cityName = (row.name ?? '').trim().toLowerCase();
-    const countryName = toTripjackCountryName(row.countries?.name);
+    const iso = (row.countries?.iso_code ?? '').trim().toUpperCase();
+    const countryName = (iso && isoMap.get(iso)) || toTripjackCountryName(row.countries?.name);
     if (!cityName || !countryName) continue;
     map.set(cityName, countryName);
   }
@@ -32,12 +43,13 @@ async function getSellableCityCountryMap() {
 
 // Single city lookup by id (public.cities), for the "sync just this one
 // city" path triggered when someone adds a city in the admin — returns
-// name + country name shaped for direct comparison against TripJack's
-// countryName field, or null if the city or its country isn't set.
+// name + country name/iso_code shaped for direct comparison against
+// TripJack's countryName field, or null if the city or its country isn't
+// set.
 async function getCityById(cityId) {
   const { data, error } = await supabase
     .from('cities')
-    .select('id, name, countries(name)')
+    .select('id, name, countries(name, iso_code)')
     .eq('id', cityId)
     .maybeSingle();
   if (error) throw error;
@@ -47,6 +59,7 @@ async function getCityById(cityId) {
     id: data.id,
     name: data.name,
     countryName: data.countries?.name ?? null,
+    isoCode: (data.countries?.iso_code ?? '').trim().toUpperCase() || null,
   };
 }
 

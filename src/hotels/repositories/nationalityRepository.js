@@ -68,4 +68,36 @@ async function searchNationalities({ q, limit = 50 }) {
   return data ?? [];
 }
 
-module.exports = { upsertNationality, bulkUpsertNationalities, searchNationalities };
+// Resolves ISO 3166-1 alpha-2 codes to TripJack's own countryName spelling,
+// via the already-synced hotels_nationalities table (populated by
+// syncNationalities() from TripJack's nationality-info endpoint) — not a
+// live TripJack API call. This is the fix for country-name mismatches like
+// "BURMA (MYANMAR)"/"Myanmar" or "UNITED STATES"/"United States of
+// America": matching by ISO code has no phrasing ambiguity, so a new
+// mismatch never needs a manual alias again. Returns
+// Map<isoCodeUpper, countryNameUpper>; codes with no matching row (e.g.
+// hotels_nationalities hasn't been synced yet) are simply absent from the
+// map — callers should fall back to name-based matching in that case.
+async function getCountryNamesByIsoCodes(isoCodes) {
+  const codes = [...new Set(isoCodes.filter(Boolean).map((c) => c.trim().toUpperCase()))];
+  const map = new Map();
+  if (!codes.length) return map;
+
+  const { data, error } = await supabase
+    .from('hotels_nationalities')
+    .select('iso_code, country_name')
+    .eq('supplier', 'tripjack')
+    .in('iso_code', codes);
+
+  if (error) throw error;
+
+  for (const row of data ?? []) {
+    const iso = (row.iso_code ?? '').trim().toUpperCase();
+    const countryName = (row.country_name ?? '').trim().toUpperCase();
+    if (!iso || !countryName) continue;
+    map.set(iso, countryName);
+  }
+  return map;
+}
+
+module.exports = { upsertNationality, bulkUpsertNationalities, searchNationalities, getCountryNamesByIsoCodes };

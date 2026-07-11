@@ -5,7 +5,7 @@ const logger = require('../../utils/logger');
 const { createSyncLog, completeSyncLog } = require('../repositories/syncLogRepository');
 const { upsertCities, getSellableCityCountryMap, listRegions, getCityById, getRegionBySupplierRegionId } = require('../repositories/cityRepository');
 const { upsertHotelMapping, upsertHotelIndex, markHotelsDeleted } = require('../repositories/hotelRepository');
-const { bulkUpsertNationalities } = require('../repositories/nationalityRepository');
+const { bulkUpsertNationalities, getCountryNamesByIsoCodes } = require('../repositories/nationalityRepository');
 
 function chunk(arr, size) {
   const result = [];
@@ -265,7 +265,9 @@ async function syncSingleCity(cityId, mode, logId) {
     }
 
     const targetCityName = target.name.trim().toLowerCase();
-    const targetCountryName = toTripjackCountryName(target.countryName);
+    const isoMap = target.isoCode ? await getCountryNamesByIsoCodes([target.isoCode]) : null;
+    const targetCountryName = (isoMap && isoMap.get(target.isoCode))
+      || toTripjackCountryName(target.countryName);
 
     let cursor = null;
     let hasMore = true;
