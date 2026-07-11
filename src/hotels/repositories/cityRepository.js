@@ -26,6 +26,40 @@ async function getSellableCityCountryMap() {
   return map;
 }
 
+// Single city lookup by id (public.cities), for the "sync just this one
+// city" path triggered when someone adds a city in the admin — returns
+// name + country name shaped for direct comparison against TripJack's
+// countryName field, or null if the city or its country isn't set.
+async function getCityById(cityId) {
+  const { data, error } = await supabase
+    .from('cities')
+    .select('id, name, countries(name)')
+    .eq('id', cityId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+
+  return {
+    id: data.id,
+    name: data.name,
+    countryName: data.countries?.name ?? null,
+  };
+}
+
+// A single hotels_regions row by its TripJack supplier_region_id — used
+// right after upsertCities() writes one matched region, to get its DB id
+// for the follow-up hotel-mapping sync without re-listing every region.
+async function getRegionBySupplierRegionId(supplierRegionId) {
+  const { data, error } = await supabase
+    .from('hotels_regions')
+    .select('id, supplier_region_id, city_name, country_name')
+    .eq('supplier', 'tripjack')
+    .eq('supplier_region_id', supplierRegionId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
 async function upsertCities(cities) {
   if (!cities.length) return 0;
 
@@ -79,4 +113,11 @@ async function searchCities({ q, limit = 20 }) {
   return data ?? [];
 }
 
-module.exports = { upsertCities, searchCities, getSellableCityCountryMap, listRegions };
+module.exports = {
+  upsertCities,
+  searchCities,
+  getSellableCityCountryMap,
+  listRegions,
+  getCityById,
+  getRegionBySupplierRegionId,
+};

@@ -3,7 +3,7 @@ const { ENDPOINTS, PAGINATION } = require('../providers/tripjack/tripjackHotelCo
 const { mapCity, toLightweightRow } = require('../providers/tripjack/tripjackHotelMapper');
 const logger = require('../../utils/logger');
 const { createSyncLog, completeSyncLog } = require('../repositories/syncLogRepository');
-const { upsertCities, getSellableCityCountryMap, listRegions } = require('../repositories/cityRepository');
+const { upsertCities, getSellableCityCountryMap, listRegions, getCityById, getRegionBySupplierRegionId } = require('../repositories/cityRepository');
 const { upsertHotelMapping, upsertHotelIndex, markHotelsDeleted } = require('../repositories/hotelRepository');
 const { bulkUpsertNationalities } = require('../repositories/nationalityRepository');
 
@@ -146,6 +146,62 @@ async function syncCities(mode, logId) {
  * sites (syncController, the GitHub Actions workflow) don't need to change.
  * @param {'live'|'test'} [mode]
  */
+// Hotel-mapping + content sync for a single region row — the per-region
+// unit of work shared by syncHotels() (looped over every scoped region)
+// and syncSingleCity() (called for just the one newly matched region).
+// @param {{id: string, supplier_region_id: string, city_name: string, country_name: string}} region
+// @param {'live'|'test'} [mode]
+async function syncHotelsForRegion(region, mode) {
+  let page = 0;
+  let hasMore = true;
+  let regionTotal = 0;
+
+  while (hasMore) {
+    const body = {
+      regionIds: [region.supplier_region_id],
+      page,
+      size: PAGINATION.HOTEL_MAPPING_SIZE,
+    };
+
+    const res = await post(ENDPOINTS.HOTEL_MAPPING, body, mode, 'hms', 1, 'hotel-sync');
+    const hotels = res.hotels ?? [];
+
+    if (hotels.length === 0) break;
+
+    // ── Step 1: ID↔region mapping (cheap, always safe) ────────────────
+    const mappingRows = hotels.map((h) => ({
+      supplierHotelId: String(h.tjHotelId),
+      unicaId: h.unicaId ? String(h.unicaId) : null,
+      regionId: region.id,
+    }));
+    regionTotal += await upsertHotelMapping(mappingRows);
+
+    // ── Step 2: batch content fetch for the same IDs → lightweight
+    //            fields (name/rating/hero image), scoped to this region ─
+    const hotelIds = hotels.map((h) => String(h.tjHotelId));
+    const contentBatches = chunk(hotelIds, PAGINATION.HOTEL_CONTENT_SIZE);
+    const contentTasks = contentBatches.map((batchIds) => async () => {
+      try {
+        const contentRes = await post(ENDPOINTS.HOTEL_CONTENT, { hotelIds: batchIds }, mode, 'hms', 1, 'hotel-sync');
+        const rawHotels = contentRes.hotels ?? [];
+        await upsertHotelIndex(rawHotels.map(toLightweightRow));
+      } catch (err) {
+        logger.warn(`[syncService]   content batch failed for ${region.city_name} (${batchIds.length} ids) — mapping kept, will fill in on detail view`, { error: err.message });
+      }
+    });
+    await runConcurrent(contentTasks, 3);
+
+    const pageable = res.pageable ?? {};
+    page++;
+    hasMore = page < (pageable.totalPages ?? 0);
+  }
+
+  if (regionTotal > 0) {
+    logger.info(`[syncService]   ${region.city_name}, ${region.country_name} — mapped ${regionTotal} hotels`);
+  }
+  return regionTotal;
+}
+
 async function syncHotels(mode, _lastUpdateTime, _type, logId) {
   logId = logId ?? await createSyncLog({
     supplier: 'tripjack',
@@ -160,57 +216,7 @@ async function syncHotels(mode, _lastUpdateTime, _type, logId) {
     const regions = await listRegions();
     logger.info(`[syncService] Hotel sync — walking ${regions.length} scoped regions (mapping + content)`);
 
-    const tasks = regions.map((region) => async () => {
-      let page = 0;
-      let hasMore = true;
-      let regionTotal = 0;
-
-      while (hasMore) {
-        const body = {
-          regionIds: [region.supplier_region_id],
-          page,
-          size: PAGINATION.HOTEL_MAPPING_SIZE,
-        };
-
-        const res = await post(ENDPOINTS.HOTEL_MAPPING, body, mode, 'hms', 1, 'hotel-sync');
-        const hotels = res.hotels ?? [];
-
-        if (hotels.length === 0) break;
-
-        // ── Step 1: ID↔region mapping (cheap, always safe) ────────────────
-        const mappingRows = hotels.map((h) => ({
-          supplierHotelId: String(h.tjHotelId),
-          unicaId: h.unicaId ? String(h.unicaId) : null,
-          regionId: region.id,
-        }));
-        regionTotal += await upsertHotelMapping(mappingRows);
-
-        // ── Step 2: batch content fetch for the same IDs → lightweight
-        //            fields (name/rating/hero image), scoped to this region ─
-        const hotelIds = hotels.map((h) => String(h.tjHotelId));
-        const contentBatches = chunk(hotelIds, PAGINATION.HOTEL_CONTENT_SIZE);
-        const contentTasks = contentBatches.map((batchIds) => async () => {
-          try {
-            const contentRes = await post(ENDPOINTS.HOTEL_CONTENT, { hotelIds: batchIds }, mode, 'hms', 1, 'hotel-sync');
-            const rawHotels = contentRes.hotels ?? [];
-            await upsertHotelIndex(rawHotels.map(toLightweightRow));
-          } catch (err) {
-            logger.warn(`[syncService]   content batch failed for ${region.city_name} (${batchIds.length} ids) — mapping kept, will fill in on detail view`, { error: err.message });
-          }
-        });
-        await runConcurrent(contentTasks, 3);
-
-        const pageable = res.pageable ?? {};
-        page++;
-        hasMore = page < (pageable.totalPages ?? 0);
-      }
-
-      if (regionTotal > 0) {
-        logger.info(`[syncService]   ${region.city_name}, ${region.country_name} — mapped ${regionTotal} hotels`);
-      }
-      return regionTotal;
-    });
-
+    const tasks = regions.map((region) => () => syncHotelsForRegion(region, mode));
     const counts = await runConcurrent(tasks, 5);
     totalProcessed = counts.reduce((s, c) => s + c, 0);
 
@@ -220,6 +226,92 @@ async function syncHotels(mode, _lastUpdateTime, _type, logId) {
     return { success: true, recordsProcessed: totalProcessed };
   } catch (err) {
     await completeSyncLog({ id: logId, responseStatus: null, recordsProcessed: totalProcessed, success: false, errorMessage: err.message });
+    throw err;
+  }
+}
+
+/**
+ * Sync exactly one city — triggered when someone adds a new city via the
+ * admin (rather than waiting for the next scheduled full syncCities() run).
+ * TripJack's city-list endpoint has no name search (confirmed: cursor
+ * pagination only), so finding this one city still means walking their
+ * global list page by page — same cost as syncCities(), just stopping the
+ * moment a match is found instead of filtering the whole list against
+ * every CNK destination. Worst case (no match, or the match is on the
+ * last page) is a full walk, same as today's cron.
+ *
+ * If the city has no country_id set, or TripJack has no matching city for
+ * that name+country, this completes successfully with recordsProcessed: 0
+ * — the city stays usable for its original purpose (tour packages) with
+ * no hotel inventory, same as the handful of non-TripJack-matched cities
+ * already in the initial migration. No error, no separate alert.
+ * @param {string} cityId
+ * @param {'live'|'test'} [mode]
+ */
+async function syncSingleCity(cityId, mode, logId) {
+  logId = logId ?? await createSyncLog({
+    supplier: 'tripjack',
+    syncType: 'city-single',
+    requestUrl: ENDPOINTS.CITY_LIST,
+    requestPayload: { mode, cityId },
+  });
+
+  try {
+    const target = await getCityById(cityId);
+    if (!target || !target.countryName) {
+      logger.warn(`[syncService] Single-city sync skipped — city ${cityId} not found or has no country set`);
+      await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: 0, success: true });
+      return { success: true, recordsProcessed: 0 };
+    }
+
+    const targetCityName = target.name.trim().toLowerCase();
+    const targetCountryName = target.countryName.trim().toUpperCase();
+
+    let cursor = null;
+    let hasMore = true;
+    let page = 1;
+    let matched = null;
+
+    while (hasMore && !matched) {
+      const params = { limit: PAGINATION.CITY_LIMIT };
+      if (cursor) params.cursor = cursor;
+
+      logger.info(`[syncService] Single-city sync — scanning city page ${page} for "${target.name}, ${target.countryName}" (cursor: ${cursor ?? 'first'})`);
+
+      const res = await get(ENDPOINTS.CITY_LIST, params, mode, 'hms', 'hotel-sync');
+      const raw = res.hotelCityRegionIds ?? [];
+      const mapped = raw.map(mapCity);
+
+      matched = mapped.find((c) =>
+        c.cityName &&
+        c.cityName.trim().toLowerCase() === targetCityName &&
+        (c.countryName ?? '').trim().toUpperCase() === targetCountryName,
+      ) ?? null;
+
+      cursor = res.nextCursor ?? null;
+      hasMore = res.hasMore === true && cursor !== null;
+      page++;
+    }
+
+    if (!matched) {
+      logger.warn(`[syncService] Single-city sync — no TripJack match for "${target.name}, ${target.countryName}" after walking full city list`);
+      await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: 0, success: true });
+      return { success: true, recordsProcessed: 0 };
+    }
+
+    await upsertCities([matched]);
+    const region = await getRegionBySupplierRegionId(matched.supplierRegionId);
+
+    let hotelsProcessed = 0;
+    if (region) {
+      hotelsProcessed = await syncHotelsForRegion(region, mode);
+      logger.info(`[syncService] Single-city sync complete — ${target.name}, ${target.countryName}: ${hotelsProcessed} hotels`);
+    }
+
+    await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: hotelsProcessed, success: true });
+    return { success: true, recordsProcessed: hotelsProcessed };
+  } catch (err) {
+    await completeSyncLog({ id: logId, responseStatus: null, recordsProcessed: 0, success: false, errorMessage: err.message });
     throw err;
   }
 }
@@ -311,4 +403,4 @@ async function syncNationalities(mode, logId) {
   }
 }
 
-module.exports = { syncCities, syncHotels, syncDeletedHotels, syncNationalities };
+module.exports = { syncCities, syncHotels, syncSingleCity, syncDeletedHotels, syncNationalities };

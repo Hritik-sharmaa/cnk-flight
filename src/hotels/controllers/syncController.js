@@ -1,7 +1,7 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const response = require('../../utils/response');
 const logger = require('../../utils/logger');
-const { syncCities, syncHotels, syncDeletedHotels, syncNationalities } = require('../services/syncService');
+const { syncCities, syncHotels, syncSingleCity, syncDeletedHotels, syncNationalities } = require('../services/syncService');
 const { createSyncLog, getSyncLog } = require('../repositories/syncLogRepository');
 const { purgeExpiredDetailCache } = require('../repositories/hotelRepository');
 const { ENDPOINTS } = require('../providers/tripjack/tripjackHotelConfig');
@@ -22,6 +22,26 @@ const triggerCitySync = asyncHandler(async (req, res) => {
   logger.info(`City sync triggered [mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, logId=${logId}]`);
   runInBackground('City sync', () => syncCities(mode, logId));
   return response(res, true, 202, 'City sync started', { logId });
+});
+
+// Triggered from cnk-website right after someone adds a city in the admin —
+// syncs just that one city instead of waiting for the next scheduled full
+// syncCities()/syncHotels() run.
+const triggerSingleCitySync = asyncHandler(async (req, res) => {
+  const mode = req.query.mode;
+  const { cityId } = req.body ?? {};
+
+  if (!cityId) {
+    return response(res, false, 400, 'cityId is required');
+  }
+
+  const logId = await createSyncLog({
+    supplier: 'tripjack', syncType: 'city-single',
+    requestUrl: ENDPOINTS.CITY_LIST, requestPayload: { mode, cityId },
+  });
+  logger.info(`Single-city sync triggered [cityId=${cityId}, mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, logId=${logId}]`);
+  runInBackground('Single city sync', () => syncSingleCity(cityId, mode, logId));
+  return response(res, true, 202, 'Single-city sync started', { logId });
 });
 
 const triggerHotelSync = asyncHandler(async (req, res) => {
@@ -94,4 +114,4 @@ const getSyncStatus = asyncHandler(async (req, res) => {
   return response(res, true, 200, 'Sync completed', { status: 'success', logId, recordsProcessed: log.records_processed });
 });
 
-module.exports = { triggerCitySync, triggerHotelSync, triggerDeletedHotelSync, triggerNationalitySync, purgeDetailCache, getSyncStatus };
+module.exports = { triggerCitySync, triggerSingleCitySync, triggerHotelSync, triggerDeletedHotelSync, triggerNationalitySync, purgeDetailCache, getSyncStatus };

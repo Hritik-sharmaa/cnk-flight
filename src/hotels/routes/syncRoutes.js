@@ -3,6 +3,7 @@ const auth = require('../../middleware/auth');
 const { validateSync } = require('../validators/syncValidator');
 const {
   triggerCitySync,
+  triggerSingleCitySync,
   triggerHotelSync,
   triggerDeletedHotelSync,
   triggerNationalitySync,
@@ -15,6 +16,7 @@ const router = Router();
 router.use(auth);
 
 router.post('/cities', validateSync, triggerCitySync);
+router.post('/city', validateSync, triggerSingleCitySync);
 router.post('/hotels', validateSync, triggerHotelSync);
 router.post('/hotels-deleted', validateSync, triggerDeletedHotelSync);
 router.post('/nationalities', validateSync, triggerNationalitySync);
