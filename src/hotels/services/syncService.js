@@ -189,7 +189,13 @@ async function syncHotelsForRegion(region, mode) {
         logger.warn(`[syncService]   content batch failed for ${region.city_name} (${batchIds.length} ids) — mapping kept, will fill in on detail view`, { error: err.message });
       }
     });
-    await runConcurrent(contentTasks, 3);
+    // Concurrency here (2) times syncHotels()'s own region concurrency (3)
+    // caps simultaneous hotels_inventory upserts at 6 — confirmed in
+    // production that the previous 3x5=15 combo was tripping Postgres
+    // statement timeouts under write contention on a cold-table full sync
+    // (content batches failing with "canceling statement due to statement
+    // timeout", leaving mapped-but-nameless hotels behind).
+    await runConcurrent(contentTasks, 2);
 
     const pageable = res.pageable ?? {};
     page++;
@@ -217,7 +223,7 @@ async function syncHotels(mode, _lastUpdateTime, _type, logId) {
     logger.info(`[syncService] Hotel sync — walking ${regions.length} scoped regions (mapping + content)`);
 
     const tasks = regions.map((region) => () => syncHotelsForRegion(region, mode));
-    const counts = await runConcurrent(tasks, 5);
+    const counts = await runConcurrent(tasks, 3);
     totalProcessed = counts.reduce((s, c) => s + c, 0);
 
     logger.info(`[syncService] Hotel sync complete — ${totalProcessed} hotels across ${regions.length} regions`);
