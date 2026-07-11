@@ -54,11 +54,18 @@ const PAGINATION = {
 // TripJack's countryName sometimes doesn't match the display name we (and
 // most sources) use — confirmed via production data: TripJack returns
 // "BURMA (MYANMAR)" for what we call "Myanmar", which silently broke
-// city↔country matching for Yangon (name+country match never hit). Keyed
-// by OUR country name (uppercase), value is what TripJack actually sends.
-// Add more here if other countries turn out to have the same mismatch.
+// city↔country matching for Yangon (name+country match never hit). Same
+// for "UNITED STATES" vs our "United States of America" — confirmed via
+// TripJack's own API docs (fetch-city-regionIds always returns countryName:
+// "UNITED STATES", never the "OF AMERICA" long form — that only appears in
+// the separate fullRegionName field), which broke matching for all 22 US
+// destination cities at once (Boston, Chicago, New York, etc.) until this
+// was added. Keyed by OUR country name (uppercase), value is what TripJack
+// actually sends. Add more here if other countries turn out to have the
+// same mismatch.
 const COUNTRY_NAME_ALIASES = {
   MYANMAR: 'BURMA (MYANMAR)',
+  'UNITED STATES OF AMERICA': 'UNITED STATES',
 };
 
 // Converts our countries.name into whatever TripJack's countryName field
