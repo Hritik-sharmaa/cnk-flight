@@ -36,21 +36,20 @@ async function runConcurrent(tasks, limit = 5) {
 /**
  * Fetch all cities from TripJack (cursor-paginated) and upsert into
  * hotels_regions — but only cities that match CNK's own destination list,
- * sourced from public.countries.cities (admin-curated per-country city
- * lists, e.g. the "India" row's cities field lists "Barkot, Guwahati, ...,
- * Agra, ..."). TripJack's global city list is walked once (cheap, ID+name
- * only) but everything outside CNK's real destinations is discarded rather
- * than stored, since that's what keeps the downstream hotel-mapping sync
- * scoped to a tractable size instead of TripJack's whole worldwide
- * catalogue.
+ * sourced from public.cities, the single source of truth for tour
+ * destinations (name + country_id FK into countries, one row per city). TripJack's
+ * global city list is walked once (cheap, ID+name only) but everything
+ * outside CNK's real destinations is discarded rather than stored, since
+ * that's what keeps the downstream hotel-mapping sync scoped to a
+ * tractable size instead of TripJack's whole worldwide catalogue.
  *
  * Matching is by (city name, country) together, not name alone — TripJack's
  * global list has many same-named cities in different countries (confirmed:
  * "Granada" exists in Spain, Colombia, and Nicaragua; "Barcelona" in Spain,
- * Brazil, Ecuador, Peru, and the Philippines; over 100 of CNK's ~335
- * destination names collided this way when matched by name only). A
- * TripJack city only counts as a match if its country is one CNK's own
- * `countries.cities` data says that city name belongs to.
+ * Brazil, Ecuador, Peru, and the Philippines). A TripJack city only counts
+ * as a match if its country matches the country recorded on the matching
+ * public.cities row. A city whose `country_id` hasn't been set yet is
+ * simply skipped, not guessed at.
  *
  * TripJack's own city master data also has confirmed exact duplicates — the
  * same real city (identical name/state/country) can appear under two
@@ -93,10 +92,10 @@ async function syncCities(mode, logId) {
         .map(mapCity)
         .filter((c) => {
           if (!c.cityName) return false;
-          const allowedCountries = cityCountryMap.get(c.cityName.trim().toLowerCase());
-          if (!allowedCountries) return false; // not a CNK destination at all
+          const allowedCountry = cityCountryMap.get(c.cityName.trim().toLowerCase());
+          if (!allowedCountry) return false; // not a CNK destination, or country not set yet
           const tripjackCountry = (c.countryName ?? '').trim().toUpperCase();
-          return allowedCountries.has(tripjackCountry);
+          return allowedCountry === tripjackCountry;
         })
         .filter((c) => {
           const key = `${c.cityName.trim().toLowerCase()}||${(c.countryName ?? '').trim().toLowerCase()}`;
