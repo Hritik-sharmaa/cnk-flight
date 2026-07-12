@@ -45,14 +45,18 @@ const logFlightApiCall = ({
   environment = null,
   createdBy = null,
 }) => {
+  // Search is by far the highest-volume stage and its payloads (full fare lists) dominate
+  // table size, so skip storing them on success. Errors are always kept in full for debugging.
+  const skipPayload = stage === 'search' && !isError;
+
   supabase.from('flight_api_logs').insert({
     provider,
     stage,
     endpoint,
     http_method: httpMethod,
     http_status: httpStatus,
-    request_payload: requestPayload,
-    response_payload: responsePayload,
+    request_payload: skipPayload ? null : requestPayload,
+    response_payload: skipPayload ? null : responsePayload,
     request_headers: { apikey: '[redacted]', 'Content-Type': 'application/json' },
     duration_ms: durationMs,
     is_error: isError,
