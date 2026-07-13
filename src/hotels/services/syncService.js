@@ -3,7 +3,7 @@ const { ENDPOINTS, PAGINATION, toTripjackCountryName } = require('../providers/t
 const { mapCity, toLightweightRow } = require('../providers/tripjack/tripjackHotelMapper');
 const logger = require('../../utils/logger');
 const { createSyncLog, completeSyncLog } = require('../repositories/syncLogRepository');
-const { upsertCities, getSellableCityCountryMap, listRegions, getCityById, getCountryById, updateCityName, getRegionBySupplierRegionId } = require('../repositories/cityRepository');
+const { upsertCities, getSellableCityCountryMap, listRegions, getCityById, getCountryById, updateCityName, saveCitySelectedCandidate, saveCityAllCandidates, getRegionBySupplierRegionId } = require('../repositories/cityRepository');
 const { upsertHotelMapping, upsertHotelIndex, markHotelsDeleted } = require('../repositories/hotelRepository');
 const { bulkUpsertNationalities, getCountryNamesByIsoCodes } = require('../repositories/nationalityRepository');
 
@@ -263,15 +263,39 @@ async function syncHotels(mode, _lastUpdateTime, _type, logId) {
   }
 }
 
+// Upserts one already-known candidate into hotels_regions and syncs its
+// hotels — the shared unit of work behind both the fast path below (a city
+// with a saved tripjack_selected_candidate) and syncChosenRegion() (the
+// admin picker's "sync this one" confirm step). No TripJack city-list walk
+// — this only ever touches fetch-hotel-mapping/fetch-hotel-content for the
+// one region already known by supplierRegionId.
+async function syncOneCandidate(candidate, mode) {
+  await upsertCities([candidate]);
+  const region = await getRegionBySupplierRegionId(candidate.supplierRegionId);
+  return region ? syncHotelsForRegion(region, mode) : 0;
+}
+
 /**
  * Sync exactly one city — triggered when someone adds a new city via the
- * admin (rather than waiting for the next scheduled full syncCities() run).
+ * admin, or clicks "sync"/"refresh" for an existing one.
+ *
+ * Fast path: if the city already has a confirmed tripjack_selected_candidate
+ * (set here automatically the first time a match is unambiguous, or by the
+ * admin picker when it isn't), this skips TripJack's city-list walk
+ * entirely and just re-syncs hotels for that known region — cheap, no
+ * repeat 10-40s catalogue walk on every routine re-sync.
+ *
+ * Slow path (first sync, or a city the picker hasn't resolved yet):
  * TripJack's city-list endpoint has no name search (confirmed: cursor
- * pagination only), so finding this one city still means walking their
- * global list page by page — same cost as syncCities(), just stopping the
- * moment a match is found instead of filtering the whole list against
- * every CNK destination. Worst case (no match, or the match is on the
- * last page) is a full walk, same as today's cron.
+ * pagination only), so finding this city means walking their global list
+ * page by page — same cost as syncCities(), just stopping once this one
+ * city's candidates are collected instead of filtering the whole list
+ * against every CNK destination. If exactly one real candidate turns up,
+ * it's unambiguous — auto-confirmed as tripjack_selected_candidate so the
+ * walk is never needed again for this city. If more than one turns up
+ * (Anchorage-style), nothing is auto-selected — that's genuinely ambiguous
+ * and needs the admin picker — but every candidate found is cached to
+ * tripjack_all_candidates so the picker doesn't need to re-walk either.
  *
  * If the city has no country_id set, or TripJack has no matching city for
  * that name+country, this completes successfully with recordsProcessed: 0
@@ -295,6 +319,14 @@ async function syncSingleCity(cityId, mode, logId) {
       logger.warn(`[syncService] Single-city sync skipped — city ${cityId} not found or has no country set`);
       await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: 0, success: true });
       return { success: true, recordsProcessed: 0 };
+    }
+
+    if (target.tripjackSelectedCandidate) {
+      const hotelsProcessed = await syncOneCandidate(target.tripjackSelectedCandidate, mode);
+      await saveCitySelectedCandidate(cityId, target.tripjackSelectedCandidate, hotelsProcessed);
+      logger.info(`[syncService] Single-city sync (known region) complete — ${target.name}: ${hotelsProcessed} hotels`);
+      await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: hotelsProcessed, success: true });
+      return { success: true, recordsProcessed: hotelsProcessed };
     }
 
     const targetCityName = target.name.trim().toLowerCase();
@@ -353,6 +385,20 @@ async function syncSingleCity(cityId, mode, logId) {
       if (!region) continue;
       hotelsProcessed += await syncHotelsForRegion(region, mode);
     }
+
+    if (matches.length === 1) {
+      // Unambiguous — one real place found for this name+country, so it's
+      // safe to remember automatically. Every future sync/refresh for this
+      // city skips the walk entirely from here on.
+      await saveCitySelectedCandidate(cityId, matches[0], hotelsProcessed);
+    } else {
+      // Genuinely ambiguous (Anchorage-style) — don't guess which one is
+      // "the" city. Cache every candidate found so the admin picker can
+      // show them without re-walking, but leave tripjack_selected_candidate
+      // unset until someone explicitly picks one.
+      await saveCityAllCandidates(cityId, matches);
+    }
+
     logger.info(`[syncService] Single-city sync complete — ${target.name}, ${target.countryName}: ${matches.length} candidate region(s), ${hotelsProcessed} hotels`);
 
     await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: hotelsProcessed, success: true });
@@ -425,13 +471,53 @@ async function searchTripjackCities(cityName, countryId, mode) {
 }
 
 /**
+ * Fire-and-forget wrapper around searchTripjackCities() for the admin
+ * picker — the walk can take several minutes on a slow day (confirmed:
+ * TripJack/Cloudflare response times swing from ~250ms to 2-3s per page,
+ * and there's no way to parallelize a cursor-paginated walk), which made
+ * the old synchronous request/response version silently die in the browser
+ * before results ever came back. Runs the same way every other
+ * long-running sync in this file does: return a logId immediately, do the
+ * work in the background, and always persist whatever's found to
+ * cities.tripjack_all_candidates — even if the caller's tab is long gone by
+ * the time it finishes, the results aren't lost, and the next time the
+ * picker opens for this city they're already there.
+ * @param {string} cityId
+ * @param {string} cityName
+ * @param {string} countryId
+ * @param {'live'|'test'} [mode]
+ */
+async function searchAndCacheCandidates(cityId, cityName, countryId, mode, logId) {
+  logId = logId ?? await createSyncLog({
+    supplier: 'tripjack',
+    syncType: 'city-single',
+    requestUrl: ENDPOINTS.CITY_LIST,
+    requestPayload: { mode, cityId, cityName, countryId },
+  });
+
+  try {
+    const candidates = await searchTripjackCities(cityName, countryId, mode);
+    await saveCityAllCandidates(cityId, candidates);
+
+    await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: candidates.length, success: true });
+    return { success: true, recordsProcessed: candidates.length };
+  } catch (err) {
+    await completeSyncLog({ id: logId, responseStatus: null, recordsProcessed: 0, success: false, errorMessage: err.message });
+    throw err;
+  }
+}
+
+/**
  * Saves exactly one admin-picked TripJack candidate (from
  * searchTripjackCities()) as a hotels_regions row for the given city, and
  * syncs its hotels immediately — the "confirm" step of the admin picker,
  * as opposed to syncSingleCity()'s automatic-but-sometimes-wrong exact-match
- * walk. If renameCity is true, also updates cities.name to TripJack's own
- * spelling (e.g. "Havelock" -> "Havelock Island") so future automatic syncs
- * find it by exact match without needing the picker again.
+ * walk. Always marks the picked candidate as the city's confirmed
+ * tripjack_selected_candidate (regardless of renameCity) — picking a
+ * candidate via the admin picker IS the confirmation, so every future sync
+ * for this city skips the walk and goes straight to this region. If
+ * renameCity is true, also updates cities.name to TripJack's own spelling
+ * (e.g. "Havelock" -> "Havelock Island").
  * @param {string} cityId
  * @param {object} candidate - one object as returned by searchTripjackCities()
  * @param {boolean} [renameCity=false]
@@ -446,14 +532,12 @@ async function syncChosenRegion(cityId, candidate, renameCity, mode, logId) {
   });
 
   try {
-    await upsertCities([candidate]);
-
     if (renameCity && candidate.cityName) {
       await updateCityName(cityId, candidate.cityName);
     }
 
-    const region = await getRegionBySupplierRegionId(candidate.supplierRegionId);
-    const hotelsProcessed = region ? await syncHotelsForRegion(region, mode) : 0;
+    const hotelsProcessed = await syncOneCandidate(candidate, mode);
+    await saveCitySelectedCandidate(cityId, candidate, hotelsProcessed);
 
     logger.info(`[syncService] Chosen-region sync complete — cityId=${cityId}, region="${candidate.fullRegionName}": ${hotelsProcessed} hotels`);
     await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: hotelsProcessed, success: true });
@@ -551,4 +635,4 @@ async function syncNationalities(mode, logId) {
   }
 }
 
-module.exports = { syncCities, syncHotels, syncSingleCity, searchTripjackCities, syncChosenRegion, syncDeletedHotels, syncNationalities };
+module.exports = { syncCities, syncHotels, syncSingleCity, searchTripjackCities, searchAndCacheCandidates, syncChosenRegion, syncDeletedHotels, syncNationalities };

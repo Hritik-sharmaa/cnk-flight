@@ -49,7 +49,7 @@ async function getSellableCityCountryMap() {
 async function getCityById(cityId) {
   const { data, error } = await supabase
     .from('cities')
-    .select('id, name, countries(name, iso_code)')
+    .select('id, name, countries(name, iso_code), tripjack_selected_candidate, tripjack_hotel_count')
     .eq('id', cityId)
     .maybeSingle();
   if (error) throw error;
@@ -60,7 +60,35 @@ async function getCityById(cityId) {
     name: data.name,
     countryName: data.countries?.name ?? null,
     isoCode: (data.countries?.iso_code ?? '').trim().toUpperCase() || null,
+    tripjackSelectedCandidate: data.tripjack_selected_candidate ?? null,
+    tripjackHotelCount: data.tripjack_hotel_count ?? null,
   };
+}
+
+// Persists the admin-confirmed (or unambiguously auto-matched) TripJack
+// region for a city, plus its current hotel count — the "memory" that lets
+// syncSingleCity() skip TripJack's whole city-list walk on every repeat
+// sync once a city has been matched once. Passing hotelCount as null leaves
+// the stored count untouched (used right after a fresh match, before the
+// hotel sync has actually run).
+async function saveCitySelectedCandidate(cityId, candidate, hotelCount) {
+  const update = { tripjack_selected_candidate: candidate, updated_at: new Date().toISOString() };
+  if (hotelCount !== null && hotelCount !== undefined) update.tripjack_hotel_count = hotelCount;
+
+  const { error } = await supabase.from('cities').update(update).eq('id', cityId);
+  if (error) throw error;
+}
+
+// Caches every candidate found by the last "search TripJack" picker run —
+// reference data only (search always re-walks live when explicitly asked;
+// this isn't read back to skip that), kept so switching the selected
+// candidate later doesn't require explaining what else was found.
+async function saveCityAllCandidates(cityId, candidates) {
+  const { error } = await supabase
+    .from('cities')
+    .update({ tripjack_all_candidates: candidates, updated_at: new Date().toISOString() })
+    .eq('id', cityId);
+  if (error) throw error;
 }
 
 // Country lookup by id (public.countries), for the admin "search TripJack"
@@ -168,5 +196,7 @@ module.exports = {
   getCityById,
   getCountryById,
   updateCityName,
+  saveCitySelectedCandidate,
+  saveCityAllCandidates,
   getRegionBySupplierRegionId,
 };

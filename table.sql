@@ -576,3 +576,19 @@ CREATE TABLE IF NOT EXISTS flights_sync_logs (
 
 CREATE INDEX IF NOT EXISTS idx_flights_sync_logs_created
     ON flights_sync_logs (created_at);
+
+-- Persists the confirmed TripJack region match for a city so repeat syncs
+-- don't have to re-walk TripJack's whole city catalogue (no name-search on
+-- their side, so that walk is ~10-40s every time otherwise).
+--
+-- tripjack_selected_candidate: the one confirmed region for this city (set
+--   automatically when exactly one unambiguous match is found, or manually
+--   via the admin "search TripJack" picker when there's more than one).
+-- tripjack_all_candidates: every candidate found the last time a search ran
+--   (state-variants + name-mismatch near-matches), cached for reference.
+-- tripjack_hotel_count: last known hotel count for the selected region,
+--   updated whenever hotels are synced for it.
+ALTER TABLE cities
+  ADD COLUMN IF NOT EXISTS tripjack_selected_candidate JSONB,
+  ADD COLUMN IF NOT EXISTS tripjack_all_candidates JSONB,
+  ADD COLUMN IF NOT EXISTS tripjack_hotel_count INTEGER;

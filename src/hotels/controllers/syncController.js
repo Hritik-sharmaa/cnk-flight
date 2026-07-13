@@ -1,7 +1,7 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const response = require('../../utils/response');
 const logger = require('../../utils/logger');
-const { syncCities, syncHotels, syncSingleCity, searchTripjackCities, syncChosenRegion, syncDeletedHotels, syncNationalities } = require('../services/syncService');
+const { syncCities, syncHotels, syncSingleCity, searchAndCacheCandidates, syncChosenRegion, syncDeletedHotels, syncNationalities } = require('../services/syncService');
 const { createSyncLog, getSyncLog } = require('../repositories/syncLogRepository');
 const { purgeExpiredDetailCache } = require('../repositories/hotelRepository');
 const { ENDPOINTS } = require('../providers/tripjack/tripjackHotelConfig');
@@ -44,20 +44,30 @@ const triggerSingleCitySync = asyncHandler(async (req, res) => {
   return response(res, true, 202, 'Single-city sync started', { logId });
 });
 
-// Admin "search TripJack" picker — Add/Edit City form. Runs synchronously
-// (not fire-and-forget) since the caller needs the candidate list back to
-// render a picker; same cost as triggerSingleCitySync under the hood (full
-// TripJack city-list walk, ~10-15s), just read-only, no DB writes.
+// Admin "search TripJack" picker — Edit City form. Fire-and-forget, same as
+// every other TripJack walk in this file — confirmed in production the walk
+// can take several minutes on a slow day (Cloudflare/TripJack response
+// times swinging 250ms-3s per page, ~155 pages, no way to parallelize a
+// cursor-paginated walk), which made a synchronous request/response version
+// silently die in the browser before results ever came back. The caller
+// polls GET /sync/status/:logId, then re-fetches the city to read
+// cities.tripjack_all_candidates (always written here, regardless of who's
+// still listening by the time it finishes).
 const searchCityCandidates = asyncHandler(async (req, res) => {
   const mode = req.query.mode;
-  const { name, countryId } = req.query;
+  const { name, countryId, cityId } = req.body ?? {};
 
-  if (!name || !countryId) {
-    return response(res, false, 400, 'name and countryId are required');
+  if (!name || !countryId || !cityId) {
+    return response(res, false, 400, 'name, countryId and cityId are required');
   }
 
-  const candidates = await searchTripjackCities(name, countryId, mode);
-  return response(res, true, 200, `${candidates.length} candidate(s) found`, { candidates });
+  const logId = await createSyncLog({
+    supplier: 'tripjack', syncType: 'city-single',
+    requestUrl: ENDPOINTS.CITY_LIST, requestPayload: { mode, name, countryId, cityId },
+  });
+  logger.info(`TripJack city search triggered [cityId=${cityId}, name="${name}", mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, logId=${logId}]`);
+  runInBackground('TripJack city search', () => searchAndCacheCandidates(cityId, name, countryId, mode, logId));
+  return response(res, true, 202, 'TripJack city search started', { logId });
 });
 
 // Admin "search TripJack" picker — confirm step. Saves exactly the one
