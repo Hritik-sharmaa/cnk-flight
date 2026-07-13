@@ -90,6 +90,12 @@ async function syncCities(mode, logId) {
       const raw = res.hotelCityRegionIds ?? [];
       const mapped = raw
         .map(mapCity)
+        // TripJack's docs say this endpoint only returns regionType "CITY",
+        // but confirmed in production it can also return placeholder types
+        // like "MULTI_CITY_VICINITY" (e.g. Anchorage, Alaska appeared as
+        // both) — those have no real hotel inventory behind them and must
+        // never win the state-level dedup below over the real CITY row.
+        .filter((c) => (c.regionType ?? '').toUpperCase() === 'CITY')
         .filter((c) => {
           if (!c.cityName) return false;
           const allowedCountry = cityCountryMap.get(c.cityName.trim().toLowerCase());
@@ -319,6 +325,7 @@ async function syncSingleCity(cityId, mode, logId) {
       const mapped = raw.map(mapCity);
 
       for (const c of mapped) {
+        if ((c.regionType ?? '').toUpperCase() !== 'CITY') continue; // skip placeholder types like MULTI_CITY_VICINITY
         if (!c.cityName || c.cityName.trim().toLowerCase() !== targetCityName) continue;
         if ((c.countryName ?? '').trim().toUpperCase() !== targetCountryName) continue;
         const key = `${(c.stateName ?? '').trim().toLowerCase()}`;
