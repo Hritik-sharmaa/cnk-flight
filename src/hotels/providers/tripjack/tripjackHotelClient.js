@@ -124,11 +124,26 @@ async function post(path, body = {}, mode, service = 'hms', retries = 1, clientT
   try {
     return await attempt();
   } catch (err) {
-    const isRetryable = err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || err.message?.includes('timeout');
+    // Client-side timeouts (axios never got a response) — confirmed cause
+    // in the past. HTTP 502/503/504 — confirmed via production: Cloudflare
+    // sitting in front of TripJack returns these as normal HTTP responses
+    // (not a connection timeout), with a body explicitly saying
+    // `"retryable": true` — the old check only looked at err.code/message
+    // and silently never retried these, letting a transient gateway
+    // hiccup kill an entire multi-hour sync run.
+    const status = err.response?.status;
+    const isRetryable = err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || err.message?.includes('timeout')
+      || status === 502 || status === 503 || status === 504;
 
     if (retries > 0 && isRetryable) {
-      logger.warn(`[tripjackHotelClient] POST ${path} timed out — retrying (${retries} left)`);
-      await new Promise((r) => setTimeout(r, 3000)); // 3s back-off before retry
+      // Honor Cloudflare/TripJack's own retry_after hint when present
+      // (confirmed: 504 responses include `"retry_after": 120` seconds) —
+      // otherwise fall back to a short 3s backoff for connection-level
+      // timeouts, which are usually transient and recover fast.
+      const retryAfterSeconds = err.response?.data?.retry_after;
+      const backoffMs = retryAfterSeconds ? retryAfterSeconds * 1000 : 3000;
+      logger.warn(`[tripjackHotelClient] POST ${path} failed (${status ?? err.code}) — retrying in ${backoffMs}ms (${retries} left)`);
+      await new Promise((r) => setTimeout(r, backoffMs));
       return post(path, body, mode, service, retries - 1, clientType);
     }
 

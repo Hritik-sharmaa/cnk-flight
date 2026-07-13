@@ -98,7 +98,14 @@ async function syncCities(mode, logId) {
           return allowedCountry === tripjackCountry;
         })
         .filter((c) => {
-          const key = `${c.cityName.trim().toLowerCase()}||${(c.countryName ?? '').trim().toLowerCase()}`;
+          // Keyed by (city, state, country) — not just (city, country) — so
+          // genuinely different places sharing a name (Anchorage, NJ vs
+          // Anchorage, AK) are both kept as separate hotels_regions rows
+          // instead of the second one being discarded as a false duplicate.
+          // Only exact re-listings of the same real place (identical name +
+          // state + country, e.g. Bangkok appearing under two cityRegionIds)
+          // still collapse to one.
+          const key = `${c.cityName.trim().toLowerCase()}||${(c.stateName ?? '').trim().toLowerCase()}||${(c.countryName ?? '').trim().toLowerCase()}`;
           if (seenCityCountryKeys.has(key)) return false;
           seenCityCountryKeys.add(key);
           return true;
@@ -163,7 +170,21 @@ async function syncHotelsForRegion(region, mode) {
       size: PAGINATION.HOTEL_MAPPING_SIZE,
     };
 
-    const res = await post(ENDPOINTS.HOTEL_MAPPING, body, mode, 'hms', 1, 'hotel-sync');
+    // Unlike the content-fetch step below, a mapping-fetch failure here
+    // used to be uncaught — it would throw out of syncHotelsForRegion(),
+    // which propagates through runConcurrent()'s Promise.all and aborts
+    // the ENTIRE syncHotels() run for every other region too. Confirmed in
+    // production: a single transient 504 from TripJack's Cloudflare killed
+    // a multi-hour, 326-region sync after it had already completed most of
+    // them. Now: give up on just this region (keep whatever pages it
+    // already got through) and let the rest of the sync continue.
+    let res;
+    try {
+      res = await post(ENDPOINTS.HOTEL_MAPPING, body, mode, 'hms', 2, 'hotel-sync');
+    } catch (err) {
+      logger.warn(`[syncService]   mapping fetch failed for ${region.city_name} page ${page} — abandoning rest of this region, sync continues`, { error: err.message });
+      break;
+    }
     const hotels = res.hotels ?? [];
 
     if (hotels.length === 0) break;
@@ -278,9 +299,16 @@ async function syncSingleCity(cityId, mode, logId) {
     let cursor = null;
     let hasMore = true;
     let page = 1;
-    let matched = null;
+    const matches = [];
+    const seenStateKeys = new Set();
 
-    while (hasMore && !matched) {
+    // Walk the FULL city list rather than stopping at the first hit — a
+    // name+country match can be one of several real places (e.g. Anchorage,
+    // NJ vs Anchorage, AK are both "Anchorage, United States"), so every
+    // candidate needs to be collected before anything gets synced. Same
+    // (city, state, country) dedup as syncCities() — only exact re-listings
+    // of the same real place collapse to one.
+    while (hasMore) {
       const params = { limit: PAGINATION.CITY_LIMIT };
       if (cursor) params.cursor = cursor;
 
@@ -290,31 +318,35 @@ async function syncSingleCity(cityId, mode, logId) {
       const raw = res.hotelCityRegionIds ?? [];
       const mapped = raw.map(mapCity);
 
-      matched = mapped.find((c) =>
-        c.cityName &&
-        c.cityName.trim().toLowerCase() === targetCityName &&
-        (c.countryName ?? '').trim().toUpperCase() === targetCountryName,
-      ) ?? null;
+      for (const c of mapped) {
+        if (!c.cityName || c.cityName.trim().toLowerCase() !== targetCityName) continue;
+        if ((c.countryName ?? '').trim().toUpperCase() !== targetCountryName) continue;
+        const key = `${(c.stateName ?? '').trim().toLowerCase()}`;
+        if (seenStateKeys.has(key)) continue;
+        seenStateKeys.add(key);
+        matches.push(c);
+      }
 
       cursor = res.nextCursor ?? null;
       hasMore = res.hasMore === true && cursor !== null;
       page++;
     }
 
-    if (!matched) {
+    if (!matches.length) {
       logger.warn(`[syncService] Single-city sync — no TripJack match for "${target.name}, ${target.countryName}" after walking full city list`);
       await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: 0, success: true });
       return { success: true, recordsProcessed: 0 };
     }
 
-    await upsertCities([matched]);
-    const region = await getRegionBySupplierRegionId(matched.supplierRegionId);
+    await upsertCities(matches);
 
     let hotelsProcessed = 0;
-    if (region) {
-      hotelsProcessed = await syncHotelsForRegion(region, mode);
-      logger.info(`[syncService] Single-city sync complete — ${target.name}, ${target.countryName}: ${hotelsProcessed} hotels`);
+    for (const match of matches) {
+      const region = await getRegionBySupplierRegionId(match.supplierRegionId);
+      if (!region) continue;
+      hotelsProcessed += await syncHotelsForRegion(region, mode);
     }
+    logger.info(`[syncService] Single-city sync complete — ${target.name}, ${target.countryName}: ${matches.length} candidate region(s), ${hotelsProcessed} hotels`);
 
     await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: hotelsProcessed, success: true });
     return { success: true, recordsProcessed: hotelsProcessed };
