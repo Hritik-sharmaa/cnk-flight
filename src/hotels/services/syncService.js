@@ -3,7 +3,7 @@ const { ENDPOINTS, PAGINATION, toTripjackCountryName } = require('../providers/t
 const { mapCity, toLightweightRow } = require('../providers/tripjack/tripjackHotelMapper');
 const logger = require('../../utils/logger');
 const { createSyncLog, completeSyncLog } = require('../repositories/syncLogRepository');
-const { upsertCities, getSellableCityCountryMap, listRegions, getCityById, getCountryById, updateCityName, saveCitySelectedCandidate, saveCityAllCandidates, getRegionBySupplierRegionId } = require('../repositories/cityRepository');
+const { upsertCities, getSellableCityCountryMap, listRegions, getCityById, getCountryById, updateCityName, saveCitySelectedCandidates, saveCityAllCandidates, getRegionBySupplierRegionId } = require('../repositories/cityRepository');
 const { upsertHotelMapping, upsertHotelIndex, markHotelsDeleted } = require('../repositories/hotelRepository');
 const { bulkUpsertNationalities, getCountryNamesByIsoCodes } = require('../repositories/nationalityRepository');
 
@@ -265,14 +265,26 @@ async function syncHotels(mode, _lastUpdateTime, _type, logId) {
 
 // Upserts one already-known candidate into hotels_regions and syncs its
 // hotels — the shared unit of work behind both the fast path below (a city
-// with a saved tripjack_selected_candidate) and syncChosenRegion() (the
-// admin picker's "sync this one" confirm step). No TripJack city-list walk
+// with saved tripjack_selected_candidate(s)) and syncChosenRegions() (the
+// admin picker's multi-select confirm step). No TripJack city-list walk
 // — this only ever touches fetch-hotel-mapping/fetch-hotel-content for the
 // one region already known by supplierRegionId.
 async function syncOneCandidate(candidate, mode) {
   await upsertCities([candidate]);
   const region = await getRegionBySupplierRegionId(candidate.supplierRegionId);
   return region ? syncHotelsForRegion(region, mode) : 0;
+}
+
+// Same as syncOneCandidate() but for a whole selected set — a city can
+// legitimately need more than one TripJack region (e.g. a metro area split
+// across two real region entries, or an admin explicitly multi-selecting
+// via the picker), not just one. Returns the combined hotel total.
+async function syncCandidates(candidates, mode) {
+  let total = 0;
+  for (const candidate of candidates) {
+    total += await syncOneCandidate(candidate, mode);
+  }
+  return total;
 }
 
 /**
@@ -321,10 +333,10 @@ async function syncSingleCity(cityId, mode, logId) {
       return { success: true, recordsProcessed: 0 };
     }
 
-    if (target.tripjackSelectedCandidate) {
-      const hotelsProcessed = await syncOneCandidate(target.tripjackSelectedCandidate, mode);
-      await saveCitySelectedCandidate(cityId, target.tripjackSelectedCandidate, hotelsProcessed);
-      logger.info(`[syncService] Single-city sync (known region) complete — ${target.name}: ${hotelsProcessed} hotels`);
+    if (target.tripjackSelectedCandidates.length > 0) {
+      const hotelsProcessed = await syncCandidates(target.tripjackSelectedCandidates, mode);
+      await saveCitySelectedCandidates(cityId, target.tripjackSelectedCandidates, hotelsProcessed);
+      logger.info(`[syncService] Single-city sync (known region${target.tripjackSelectedCandidates.length > 1 ? 's' : ''}) complete — ${target.name}: ${hotelsProcessed} hotels`);
       await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: hotelsProcessed, success: true });
       return { success: true, recordsProcessed: hotelsProcessed };
     }
@@ -390,7 +402,7 @@ async function syncSingleCity(cityId, mode, logId) {
       // Unambiguous — one real place found for this name+country, so it's
       // safe to remember automatically. Every future sync/refresh for this
       // city skips the walk entirely from here on.
-      await saveCitySelectedCandidate(cityId, matches[0], hotelsProcessed);
+      await saveCitySelectedCandidates(cityId, matches, hotelsProcessed);
     } else {
       // Genuinely ambiguous (Anchorage-style) — don't guess which one is
       // "the" city. Cache every candidate found so the admin picker can
@@ -508,38 +520,42 @@ async function searchAndCacheCandidates(cityId, cityName, countryId, mode, logId
 }
 
 /**
- * Saves exactly one admin-picked TripJack candidate (from
- * searchTripjackCities()) as a hotels_regions row for the given city, and
- * syncs its hotels immediately — the "confirm" step of the admin picker,
- * as opposed to syncSingleCity()'s automatic-but-sometimes-wrong exact-match
- * walk. Always marks the picked candidate as the city's confirmed
- * tripjack_selected_candidate (regardless of renameCity) — picking a
- * candidate via the admin picker IS the confirmation, so every future sync
- * for this city skips the walk and goes straight to this region. If
- * renameCity is true, also updates cities.name to TripJack's own spelling
- * (e.g. "Havelock" -> "Havelock Island").
+ * Saves the admin-picked TripJack candidate(s) (from searchTripjackCities())
+ * as hotels_regions rows for the given city, and syncs their hotels
+ * immediately — the "confirm" step of the admin picker, as opposed to
+ * syncSingleCity()'s automatic-but-sometimes-wrong exact-match walk. Accepts
+ * an array — the picker supports multi-select, since a city can legitimately
+ * need more than one TripJack region (e.g. a metro area genuinely split
+ * across two real region entries), not just a single disambiguated pick.
+ * Always marks the picked candidates as the city's confirmed
+ * tripjack_selected_candidate(s) (regardless of renameCity) — picking via
+ * the admin picker IS the confirmation, so every future sync for this city
+ * skips the walk and goes straight to these regions. If renameCity is true,
+ * also updates cities.name to TripJack's own spelling of the first
+ * candidate (e.g. "Havelock" -> "Havelock Island").
  * @param {string} cityId
- * @param {object} candidate - one object as returned by searchTripjackCities()
+ * @param {object[]} candidates - one or more objects as returned by searchTripjackCities()
  * @param {boolean} [renameCity=false]
  * @param {'live'|'test'} [mode]
  */
-async function syncChosenRegion(cityId, candidate, renameCity, mode, logId) {
+async function syncChosenRegions(cityId, candidates, renameCity, mode, logId) {
   logId = logId ?? await createSyncLog({
     supplier: 'tripjack',
     syncType: 'city-single',
     requestUrl: ENDPOINTS.CITY_LIST,
-    requestPayload: { mode, cityId, candidate },
+    requestPayload: { mode, cityId, candidates },
   });
 
   try {
-    if (renameCity && candidate.cityName) {
-      await updateCityName(cityId, candidate.cityName);
+    if (renameCity && candidates[0]?.cityName) {
+      await updateCityName(cityId, candidates[0].cityName);
     }
 
-    const hotelsProcessed = await syncOneCandidate(candidate, mode);
-    await saveCitySelectedCandidate(cityId, candidate, hotelsProcessed);
+    const hotelsProcessed = await syncCandidates(candidates, mode);
+    await saveCitySelectedCandidates(cityId, candidates, hotelsProcessed);
 
-    logger.info(`[syncService] Chosen-region sync complete — cityId=${cityId}, region="${candidate.fullRegionName}": ${hotelsProcessed} hotels`);
+    const regionLabels = candidates.map((c) => c.fullRegionName).join('; ');
+    logger.info(`[syncService] Chosen-region(s) sync complete — cityId=${cityId}, region(s)="${regionLabels}": ${hotelsProcessed} hotels`);
     await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: hotelsProcessed, success: true });
     return { success: true, recordsProcessed: hotelsProcessed };
   } catch (err) {
@@ -635,4 +651,4 @@ async function syncNationalities(mode, logId) {
   }
 }
 
-module.exports = { syncCities, syncHotels, syncSingleCity, searchTripjackCities, searchAndCacheCandidates, syncChosenRegion, syncDeletedHotels, syncNationalities };
+module.exports = { syncCities, syncHotels, syncSingleCity, searchTripjackCities, searchAndCacheCandidates, syncChosenRegions, syncDeletedHotels, syncNationalities };

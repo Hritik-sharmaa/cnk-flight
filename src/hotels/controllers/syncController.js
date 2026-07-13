@@ -1,7 +1,7 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const response = require('../../utils/response');
 const logger = require('../../utils/logger');
-const { syncCities, syncHotels, syncSingleCity, searchAndCacheCandidates, syncChosenRegion, syncDeletedHotels, syncNationalities } = require('../services/syncService');
+const { syncCities, syncHotels, syncSingleCity, searchAndCacheCandidates, syncChosenRegions, syncDeletedHotels, syncNationalities } = require('../services/syncService');
 const { createSyncLog, getSyncLog } = require('../repositories/syncLogRepository');
 const { purgeExpiredDetailCache } = require('../repositories/hotelRepository');
 const { ENDPOINTS } = require('../providers/tripjack/tripjackHotelConfig');
@@ -70,25 +70,26 @@ const searchCityCandidates = asyncHandler(async (req, res) => {
   return response(res, true, 202, 'TripJack city search started', { logId });
 });
 
-// Admin "search TripJack" picker — confirm step. Saves exactly the one
-// candidate the seller picked (from searchCityCandidates above) and syncs
-// its hotels, instead of trusting an automatic exact-match walk that can
-// land on the wrong same-named place (see syncSingleCity()).
+// Admin "search TripJack" picker — confirm step. Saves the candidate(s) the
+// seller picked (from searchCityCandidates above, multi-select supported)
+// and syncs their hotels, instead of trusting an automatic exact-match walk
+// that can land on the wrong same-named place (see syncSingleCity()).
 const confirmCitySync = asyncHandler(async (req, res) => {
   const mode = req.query.mode;
-  const { cityId, candidate, renameCity } = req.body ?? {};
+  const { cityId, candidates, renameCity } = req.body ?? {};
 
-  if (!cityId || !candidate?.supplierRegionId) {
-    return response(res, false, 400, 'cityId and candidate are required');
+  if (!cityId || !Array.isArray(candidates) || candidates.length === 0 || candidates.some((c) => !c?.supplierRegionId)) {
+    return response(res, false, 400, 'cityId and a non-empty candidates array are required');
   }
 
   const logId = await createSyncLog({
     supplier: 'tripjack', syncType: 'city-single',
-    requestUrl: ENDPOINTS.CITY_LIST, requestPayload: { mode, cityId, candidate },
+    requestUrl: ENDPOINTS.CITY_LIST, requestPayload: { mode, cityId, candidates },
   });
-  logger.info(`Chosen-region sync triggered [cityId=${cityId}, region=${candidate.supplierRegionId}, mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, logId=${logId}]`);
-  runInBackground('Chosen region sync', () => syncChosenRegion(cityId, candidate, renameCity === true, mode, logId));
-  return response(res, true, 202, 'Chosen-region sync started', { logId });
+  const regionIds = candidates.map((c) => c.supplierRegionId).join(', ');
+  logger.info(`Chosen-region(s) sync triggered [cityId=${cityId}, regions=${regionIds}, mode=${mode ?? process.env.HOTEL_MODE ?? 'live'}, logId=${logId}]`);
+  runInBackground('Chosen region(s) sync', () => syncChosenRegions(cityId, candidates, renameCity === true, mode, logId));
+  return response(res, true, 202, 'Chosen-region(s) sync started', { logId });
 });
 
 const triggerHotelSync = asyncHandler(async (req, res) => {

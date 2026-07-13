@@ -55,24 +55,34 @@ async function getCityById(cityId) {
   if (error) throw error;
   if (!data) return null;
 
+  // tripjack_selected_candidate is stored as an array — a city can
+  // legitimately need more than one TripJack region selected (e.g. a metro
+  // area split across two real region entries), not just a single pick.
+  // Normalizes any pre-existing single-object rows from before this change
+  // so old data doesn't break the array-shaped callers below.
+  const raw = data.tripjack_selected_candidate;
+  const selectedCandidates = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+
   return {
     id: data.id,
     name: data.name,
     countryName: data.countries?.name ?? null,
     isoCode: (data.countries?.iso_code ?? '').trim().toUpperCase() || null,
-    tripjackSelectedCandidate: data.tripjack_selected_candidate ?? null,
+    tripjackSelectedCandidates: selectedCandidates,
     tripjackHotelCount: data.tripjack_hotel_count ?? null,
   };
 }
 
 // Persists the admin-confirmed (or unambiguously auto-matched) TripJack
-// region for a city, plus its current hotel count — the "memory" that lets
-// syncSingleCity() skip TripJack's whole city-list walk on every repeat
-// sync once a city has been matched once. Passing hotelCount as null leaves
-// the stored count untouched (used right after a fresh match, before the
-// hotel sync has actually run).
-async function saveCitySelectedCandidate(cityId, candidate, hotelCount) {
-  const update = { tripjack_selected_candidate: candidate, updated_at: new Date().toISOString() };
+// region(s) for a city, plus their combined current hotel count — the
+// "memory" that lets syncSingleCity() skip TripJack's whole city-list walk
+// on every repeat sync once a city has been matched once. Always stores an
+// array, even for a single pick — a city can have more than one TripJack
+// region genuinely selected (the admin picker allows multi-select).
+// Passing hotelCount as null leaves the stored count untouched (used right
+// after a fresh match, before the hotel sync has actually run).
+async function saveCitySelectedCandidates(cityId, candidates, hotelCount) {
+  const update = { tripjack_selected_candidate: candidates, updated_at: new Date().toISOString() };
   if (hotelCount !== null && hotelCount !== undefined) update.tripjack_hotel_count = hotelCount;
 
   const { error } = await supabase.from('cities').update(update).eq('id', cityId);
@@ -196,7 +206,7 @@ module.exports = {
   getCityById,
   getCountryById,
   updateCityName,
-  saveCitySelectedCandidate,
+  saveCitySelectedCandidates,
   saveCityAllCandidates,
   getRegionBySupplierRegionId,
 };
