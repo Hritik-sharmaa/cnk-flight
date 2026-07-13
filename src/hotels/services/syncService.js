@@ -3,7 +3,7 @@ const { ENDPOINTS, PAGINATION, toTripjackCountryName } = require('../providers/t
 const { mapCity, toLightweightRow } = require('../providers/tripjack/tripjackHotelMapper');
 const logger = require('../../utils/logger');
 const { createSyncLog, completeSyncLog } = require('../repositories/syncLogRepository');
-const { upsertCities, getSellableCityCountryMap, listRegions, getCityById, getRegionBySupplierRegionId } = require('../repositories/cityRepository');
+const { upsertCities, getSellableCityCountryMap, listRegions, getCityById, getCountryById, updateCityName, getRegionBySupplierRegionId } = require('../repositories/cityRepository');
 const { upsertHotelMapping, upsertHotelIndex, markHotelsDeleted } = require('../repositories/hotelRepository');
 const { bulkUpsertNationalities, getCountryNamesByIsoCodes } = require('../repositories/nationalityRepository');
 
@@ -364,6 +364,107 @@ async function syncSingleCity(cityId, mode, logId) {
 }
 
 /**
+ * Walks TripJack's full city list looking for any city whose name contains
+ * (or is contained by) the given search term, within the given country —
+ * unlike syncSingleCity()'s exact-match walk, this is for the admin "search
+ * TripJack" picker, where the saved CNK city name doesn't necessarily match
+ * TripJack's spelling exactly (e.g. CNK's "Havelock" vs TripJack's "Havelock
+ * Island"). Read-only — doesn't touch hotels_regions or trigger any hotel
+ * sync; that only happens once someone picks a candidate via
+ * syncChosenRegion(). Same cost/shape as syncSingleCity() (full cursor walk,
+ * no name-search on TripJack's side, so this takes roughly as long).
+ * @param {string} cityName
+ * @param {string} countryId - public.countries.id, resolved to TripJack's
+ *                             countryName spelling the same way (iso_code ->
+ *                             hotels_nationalities, alias map as fallback) as
+ *                             every other matching path in this file.
+ * @param {'live'|'test'} [mode]
+ * @returns {Promise<Array<{supplierRegionId: string, cityName: string, stateName: string|null, countryName: string, fullRegionName: string, regionType: string|null}>>}
+ */
+async function searchTripjackCities(cityName, countryId, mode) {
+  const needle = (cityName ?? '').trim().toLowerCase();
+  if (!needle) return [];
+
+  const country = await getCountryById(countryId);
+  if (!country) return [];
+
+  const isoMap = country.isoCode ? await getCountryNamesByIsoCodes([country.isoCode]) : null;
+  const targetCountryName = (isoMap && isoMap.get(country.isoCode)) || toTripjackCountryName(country.name);
+
+  let cursor = null;
+  let hasMore = true;
+  let page = 1;
+  const results = [];
+  const seenRegionIds = new Set();
+
+  while (hasMore) {
+    const params = { limit: PAGINATION.CITY_LIMIT };
+    if (cursor) params.cursor = cursor;
+
+    const res = await get(ENDPOINTS.CITY_LIST, params, mode, 'hms', 'hotel-sync');
+    const raw = res.hotelCityRegionIds ?? [];
+    const mapped = raw.map(mapCity);
+
+    for (const c of mapped) {
+      if ((c.regionType ?? '').toUpperCase() !== 'CITY') continue;
+      if ((c.countryName ?? '').trim().toUpperCase() !== targetCountryName) continue;
+      const tName = (c.cityName ?? '').trim().toLowerCase();
+      if (!tName || (!tName.includes(needle) && !needle.includes(tName))) continue;
+      if (seenRegionIds.has(c.supplierRegionId)) continue;
+      seenRegionIds.add(c.supplierRegionId);
+      results.push(c);
+    }
+
+    cursor = res.nextCursor ?? null;
+    hasMore = res.hasMore === true && cursor !== null;
+    page++;
+  }
+
+  logger.info(`[syncService] TripJack city search — "${cityName}, ${country.name}" → ${results.length} candidate(s) after walking ${page - 1} page(s)`);
+  return results;
+}
+
+/**
+ * Saves exactly one admin-picked TripJack candidate (from
+ * searchTripjackCities()) as a hotels_regions row for the given city, and
+ * syncs its hotels immediately — the "confirm" step of the admin picker,
+ * as opposed to syncSingleCity()'s automatic-but-sometimes-wrong exact-match
+ * walk. If renameCity is true, also updates cities.name to TripJack's own
+ * spelling (e.g. "Havelock" -> "Havelock Island") so future automatic syncs
+ * find it by exact match without needing the picker again.
+ * @param {string} cityId
+ * @param {object} candidate - one object as returned by searchTripjackCities()
+ * @param {boolean} [renameCity=false]
+ * @param {'live'|'test'} [mode]
+ */
+async function syncChosenRegion(cityId, candidate, renameCity, mode, logId) {
+  logId = logId ?? await createSyncLog({
+    supplier: 'tripjack',
+    syncType: 'city-single',
+    requestUrl: ENDPOINTS.CITY_LIST,
+    requestPayload: { mode, cityId, candidate },
+  });
+
+  try {
+    await upsertCities([candidate]);
+
+    if (renameCity && candidate.cityName) {
+      await updateCityName(cityId, candidate.cityName);
+    }
+
+    const region = await getRegionBySupplierRegionId(candidate.supplierRegionId);
+    const hotelsProcessed = region ? await syncHotelsForRegion(region, mode) : 0;
+
+    logger.info(`[syncService] Chosen-region sync complete — cityId=${cityId}, region="${candidate.fullRegionName}": ${hotelsProcessed} hotels`);
+    await completeSyncLog({ id: logId, responseStatus: 200, recordsProcessed: hotelsProcessed, success: true });
+    return { success: true, recordsProcessed: hotelsProcessed };
+  } catch (err) {
+    await completeSyncLog({ id: logId, responseStatus: null, recordsProcessed: 0, success: false, errorMessage: err.message });
+    throw err;
+  }
+}
+
+/**
  * Fetch deleted hotel IDs from TripJack and mark them inactive in hotels_inventory.
  * Uses the dedicated fetch-deleted-hotel-mapping endpoint (type=DELETE).
  * @param {string} [lastUpdateTime] ISO 8601 — hotels deleted after this timestamp.
@@ -450,4 +551,4 @@ async function syncNationalities(mode, logId) {
   }
 }
 
-module.exports = { syncCities, syncHotels, syncSingleCity, syncDeletedHotels, syncNationalities };
+module.exports = { syncCities, syncHotels, syncSingleCity, searchTripjackCities, syncChosenRegion, syncDeletedHotels, syncNationalities };

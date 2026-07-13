@@ -63,6 +63,36 @@ async function getCityById(cityId) {
   };
 }
 
+// Country lookup by id (public.countries), for the admin "search TripJack"
+// picker — used when a city doesn't exist yet (Add City flow, no cityId to
+// look up via getCityById), just the country_id already chosen in the form.
+async function getCountryById(countryId) {
+  const { data, error } = await supabase
+    .from('countries')
+    .select('id, name, iso_code')
+    .eq('id', countryId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+
+  return {
+    id: data.id,
+    name: data.name,
+    isoCode: (data.iso_code ?? '').trim().toUpperCase() || null,
+  };
+}
+
+// Renames an existing city — used by the admin "search TripJack" picker
+// when the seller chooses to adopt TripJack's own spelling (e.g. "Havelock"
+// -> "Havelock Island") so future automatic syncs find it by exact match.
+async function updateCityName(cityId, name) {
+  const { error } = await supabase
+    .from('cities')
+    .update({ name, updated_at: new Date().toISOString() })
+    .eq('id', cityId);
+  if (error) throw error;
+}
+
 // A single hotels_regions row by its TripJack supplier_region_id — used
 // right after upsertCities() writes one matched region, to get its DB id
 // for the follow-up hotel-mapping sync without re-listing every region.
@@ -136,5 +166,7 @@ module.exports = {
   getSellableCityCountryMap,
   listRegions,
   getCityById,
+  getCountryById,
+  updateCityName,
   getRegionBySupplierRegionId,
 };

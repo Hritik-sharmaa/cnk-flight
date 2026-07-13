@@ -4,6 +4,8 @@ const { validateSync } = require('../validators/syncValidator');
 const {
   triggerCitySync,
   triggerSingleCitySync,
+  searchCityCandidates,
+  confirmCitySync,
   triggerHotelSync,
   triggerDeletedHotelSync,
   triggerNationalitySync,
@@ -17,6 +19,8 @@ router.use(auth);
 
 router.post('/cities', validateSync, triggerCitySync);
 router.post('/city', validateSync, triggerSingleCitySync);
+router.get('/city/search', validateSync, searchCityCandidates);
+router.post('/city/confirm', validateSync, confirmCitySync);
 router.post('/hotels', validateSync, triggerHotelSync);
 router.post('/hotels-deleted', validateSync, triggerDeletedHotelSync);
 router.post('/nationalities', validateSync, triggerNationalitySync);
