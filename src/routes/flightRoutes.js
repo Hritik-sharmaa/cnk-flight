@@ -1,13 +1,10 @@
 const { Router } = require('express');
 const auth = require('../middleware/auth');
 const c = require('../controllers/flight');
-const syncRoutes = require('../flights/routes/syncRoutes');
 
 const router = Router();
 
 router.use(auth);
-
-router.use('/sync',               syncRoutes);
 
 router.post('/search',            c.search);
 router.post('/review',            c.review);
